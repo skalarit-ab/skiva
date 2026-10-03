@@ -247,16 +247,15 @@ func noise(n int64) float64 {
 func (s *song) peaks() []float32 {
 	const per = 96
 	total := s.length()
-	peaks := make([]float32, peakCount)
-	for i := range peaks {
+	power := make([]float64, peakCount)
+	for i := range power {
 		for k := range per {
 			t := (float64(i) + float64(k)/per) * total / peakCount
 			l, r := s.at(t, int64(t*audio.SampleRate))
-			peaks[i] = max(peaks[i], float32(math.Abs(l)+math.Abs(r))/2)
+			power[i] += (l*l + r*r) / 2 / per
 		}
 	}
-	normalize(peaks)
-	return peaks
+	return shape(power)
 }
 
 // songSource plays a song as an [audio.Seeker].

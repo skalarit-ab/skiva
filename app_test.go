@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -197,12 +198,15 @@ func TestAPressOnTheSeekBarSeeksThere(t *testing.T) {
 	w.Input(input.PointerUp{Pos: at, Button: input.ButtonPrimary})
 	run(1)
 	got := intents(w)
-	want := s.Tracks[0].Length / 4
+	// A quarter along the bar, through the lens at the track's start
+	// as the press found it.
+	u := lens{focus: 0, strength: lensRest}.back(0.25)
+	want := time.Duration(u * float64(s.Tracks[0].Length))
 	if len(got) != 1 {
 		t.Fatalf("a press a quarter along the bar sent %v", got)
 	}
 	if seek, ok := got[0].(SeekTo); !ok || (seek.At-want).Abs() > time.Second {
-		t.Fatalf("a press a quarter along the bar sent %v, want a seek to about %v", got[0], want)
+		t.Fatalf("a press a quarter along the bar sent %v, want a seek to where the bar shows, about %v", got[0], want)
 	}
 }
 
@@ -291,5 +295,81 @@ func TestTracksChangedQuicklyEndOnTheLastWithEveryFrameInBetween(t *testing.T) {
 	}
 	if r.in.Value() < 0.99 || r.spin.Value() > 0.05 {
 		t.Fatalf("two seconds on, the record is %v in and turns at %v; want in, and stopping", r.in.Value(), r.spin.Value())
+	}
+}
+
+func TestTheLensSpreadsBarsAboutItsFocusAndKeepsTheirOrder(t *testing.T) {
+	l := lens{focus: 0.4, strength: lensHover}
+	if l.at(0) != 0 || math.Abs(l.at(1)-1) > 1e-9 {
+		t.Fatalf("the lens maps the ends to %v and %v, want 0 and 1", l.at(0), l.at(1))
+	}
+	prev := -1.0
+	for i := range 1001 {
+		u := float64(i) / 1000
+		x := l.at(u)
+		if x <= prev {
+			t.Fatalf("at %v the lens maps back, to %v after %v", u, x, prev)
+		}
+		prev = x
+		if b := l.back(x); math.Abs(b-u) > 1e-6 {
+			t.Fatalf("back(at(%v)) is %v", u, b)
+		}
+	}
+	if near, far := l.zoom(0.4), l.zoom(0.9); near < 2*far {
+		t.Fatalf("the lens spreads its focus %v and far from it %v, want the focus much wider", near, far)
+	}
+}
+
+func TestTheShapeTellsVersesFromChorusesInALoudMaster(t *testing.T) {
+	// A loud master: every stretch within 4 dB of the loudest, a
+	// chorus at the top, a verse 3 dB under, and silence at the end.
+	power := make([]float64, 40)
+	for i := range power {
+		switch {
+		case i < 30 && i%10 < 5:
+			power[i] = 0.5
+		case i < 30:
+			power[i] = 0.25
+		default:
+			power[i] = 0
+		}
+	}
+	got := shape(power)
+	if got[0] != 1 {
+		t.Errorf("the chorus is at %v, want the top", got[0])
+	}
+	if got[5] > 0.7 || got[5] < 0.3 {
+		t.Errorf("the verse, 3 dB under, is at %v, want it plainly lower, about halfway", got[5])
+	}
+	if got[35] != 0 {
+		t.Errorf("silence is at %v, want the bottom", got[35])
+	}
+}
+
+func TestADragLandsOnTheTimeItShowed(t *testing.T) {
+	s := library4()
+	s.Current = 1
+	w, root, run := stage(t, geom.Sz(1100, 720), s)
+	bar := boundsOf(t, w, run, root.now.seek)
+	y := bar.Min.Y + barH/2
+	w.Input(input.PointerMove{Pos: geom.Pt(bar.Min.X+bar.Size().W*0.7, y)})
+	w.Input(input.PointerDown{Pos: geom.Pt(bar.Min.X+bar.Size().W*0.7, y), Button: input.ButtonPrimary, Clicks: 1})
+	run(1)
+	end := geom.Pt(bar.Min.X+bar.Size().W*0.3, y)
+	for x := float32(0.7); x > 0.3; x -= 0.05 {
+		w.Input(input.PointerMove{Pos: geom.Pt(bar.Min.X+bar.Size().W*x, y)})
+		run(1)
+	}
+	w.Input(input.PointerMove{Pos: end})
+	run(1)
+	shown := root.now.seek.at
+	// The lens follows the playhead a few frames on before the release.
+	run(5)
+	w.Input(input.PointerUp{Pos: end, Button: input.ButtonPrimary})
+	run(1)
+	got := intents(w)
+	want := time.Duration(float64(shown) * float64(s.Tracks[0].Length))
+	if len(got) != 1 || got[0] != (SeekTo{At: want}) {
+		t.Fatalf("a drag let go where it showed %v sent %v, want a seek there", want, got)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -194,42 +195,64 @@ func sortEntries(es []*entry) {
 }
 
 // peaksOf reads src to its end and returns how loud each of peakCount
-// stretches of it is, from 0 to 1, for the seek bar to draw.
+// stretches of it is, as [shape] scales it, for the seek bar to draw.
 func peaksOf(src audio.Seeker) []float32 {
 	total := src.Len()
 	if total <= 0 {
 		return nil
 	}
-	peaks := make([]float32, peakCount)
-	per := total / peakCount
+	power := make([]float64, peakCount)
+	counts := make([]int, peakCount)
+	per := max(total/peakCount, 1)
 	buf := make([]float32, 2*4096)
 	var at int64
 	for {
 		n, err := src.Read(buf)
 		for i := range n {
-			b := min(int((at+int64(i))/max(per, 1)), peakCount-1)
-			v := float32(math.Abs(float64(buf[2*i])) + math.Abs(float64(buf[2*i+1])))
-			peaks[b] = max(peaks[b], v/2)
+			b := min(int((at+int64(i))/per), peakCount-1)
+			l, r := float64(buf[2*i]), float64(buf[2*i+1])
+			power[b] += (l*l + r*r) / 2
+			counts[b]++
 		}
 		at += int64(n)
 		if err != nil || n == 0 {
 			break
 		}
 	}
-	normalize(peaks)
-	return peaks
+	for i := range power {
+		power[i] /= float64(max(counts[i], 1))
+	}
+	return shape(power)
 }
 
-// normalize scales peaks to the loudest, so a quiet recording still
-// shows its shape.
-func normalize(peaks []float32) {
-	top := float32(0)
-	for _, p := range peaks {
-		top = max(top, p)
+// shape turns each stretch's power, its mean square, into a height
+// from 0 to 1. The ear hears loudness in decibels, and a track mastered
+// loud sits near its top almost throughout, so the heights run over the
+// track's own range: from its quieter stretches, a little up from the
+// bottom, to its loudest at the top, so its verses and choruses tell
+// apart. The range counts only stretches with sound in them, and spans
+// 6 to 24 dB; quieter stretches and silence fall away under it.
+func shape(power []float64) []float32 {
+	db := make([]float64, len(power))
+	for i, p := range power {
+		db[i] = 10 * math.Log10(max(p, 1e-10))
 	}
-	if top > 0 {
-		for i := range peaks {
-			peaks[i] /= top
+	sorted := slices.Clone(db)
+	slices.Sort(sorted)
+	top := sorted[len(sorted)-1]
+	sounding := sorted[sort.SearchFloat64s(sorted, top-40):]
+	low := sounding[len(sounding)/10]
+	low = max(top-24, min(low, top-6))
+	const base = 0.15
+	out := make([]float32, len(power))
+	for i, d := range db {
+		var v float64
+		if d >= low {
+			v = base + (1-base)*(d-low)/(top-low)
+		} else {
+			v = base * (1 + (d-low)/12)
 		}
+		out[i] = float32(max(0, min(1, v)))
 	}
+	return out
 }

@@ -324,7 +324,10 @@ func (t *titles) paintPair(p *paint.Painter, box geom.Size, title, artist string
 }
 
 // seekBar is the track drawn as its loudness along it: the part played
-// lit in the track's colour. A press or a drag moves the track there.
+// lit in the track's colour. The bars swell about the playhead as
+// under a lens, more while the pointer is on the bar, and a seek glides
+// the playhead, and the lens with it, to its new place. A press or a
+// drag moves the track there.
 type seekBar struct {
 	anim.Group
 	n      *nowPlaying
@@ -334,15 +337,24 @@ type seekBar struct {
 	// reveal grows the bars in, left to right, as a track's peaks come.
 	reveal *anim.Float
 	hover  *anim.Float
-	// held says the pointer drags the playhead, to at, from 0 to 1.
+	// head is where the playhead shows, 0 to 1 along the track: it
+	// follows the track playing, and glides where the track jumps.
+	head *anim.Float
+	// flash lights the bars about the playhead as it lands from a
+	// seek.
+	flash *anim.Float
+	// held says the pointer drags the playhead, to at, from 0 to 1,
+	// and last is where the pointer was last.
 	held bool
 	at   float32
+	last geom.Point
 	size geom.Size
 }
 
 func newSeekBar(n *nowPlaying) *seekBar {
-	s := &seekBar{n: n, accent: anim.NewColor(neutral), reveal: anim.NewFloat(0), hover: anim.NewFloat(0)}
-	s.Add(s.accent, s.reveal, s.hover)
+	s := &seekBar{n: n, accent: anim.NewColor(neutral), reveal: anim.NewFloat(0), hover: anim.NewFloat(0),
+		head: anim.NewFloat(0), flash: anim.NewFloat(0)}
+	s.Add(s.accent, s.reveal, s.hover, s.head, s.flash)
 	return s
 }
 
@@ -355,6 +367,54 @@ func (s *seekBar) show(t Track, fresh bool) {
 	s.accent.Animate(t.Accent, anim.Spring{Response: 0.8, Damping: 1})
 }
 
+// The lens: how much wider the bars at the playhead are than those far
+// from it, while playing and while the pointer is on the bar, and how
+// far along the track it reaches, as a fraction of it.
+const (
+	lensRest  = 0.6
+	lensHover = 1.6
+	lensWidth = 0.05
+)
+
+// lens maps a place along the track, u from 0 to 1, to a place along
+// the bar, 0 to 1, where the bars about focus are spread by strength
+// and the rest pressed together to make room. Each bar's room is
+// 1 + strength·e^(−((u−focus)/lensWidth)²), summed from the start.
+type lens struct{ focus, strength float64 }
+
+// erfFrom is the room from the track's start to u, unscaled.
+func (l lens) room(u float64) float64 {
+	k := l.strength * lensWidth * math.Sqrt(math.Pi) / 2
+	return u + k*(math.Erf((u-l.focus)/lensWidth)-math.Erf(-l.focus/lensWidth))
+}
+
+func (l lens) at(u float64) float64 { return l.room(u) / l.room(1) }
+
+// zoom is how much the lens spreads the bars at u.
+func (l lens) zoom(u float64) float64 {
+	d := (u - l.focus) / lensWidth
+	return (1 + l.strength*math.Exp(-d*d)) / l.room(1)
+}
+
+// back returns the place along the track the bar's place x lies at.
+func (l lens) back(x float64) float64 {
+	lo, hi := 0.0, 1.0
+	for range 30 {
+		mid := (lo + hi) / 2
+		if l.at(mid) < x {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	return (lo + hi) / 2
+}
+
+// lensNow is the lens as it is this frame.
+func (s *seekBar) lensNow() lens {
+	return lens{focus: float64(s.head.Value()), strength: lensRest + (lensHover-lensRest)*float64(s.hover.Value())}
+}
+
 // DragsTouch implements [gunim.TouchDragger]: a finger on the bar
 // moves the playhead rather than scroll.
 func (s *seekBar) DragsTouch() bool { return true }
@@ -364,33 +424,46 @@ const barH = 34
 
 // Handle implements [gunim.Handler].
 func (s *seekBar) Handle(e input.Event, u *gunim.UI) bool {
-	frac := func(p geom.Point) float32 { return min(max(p.X/max(s.size.W, 1), 0), 1) }
+	// Where the pointer is along the track, through the lens as drawn.
+	frac := func(p geom.Point) float32 {
+		x := min(max(p.X/max(s.size.W, 1), 0), 1)
+		return float32(s.lensNow().back(float64(x)))
+	}
 	switch e := e.(type) {
 	case input.PointerEnter:
-		s.hover.Animate(1, anim.Snappy)
+		s.hover.Animate(1, anim.Spring{Response: 0.35, Damping: 0.8})
 	case input.PointerLeave:
 		if !s.held {
-			s.hover.Animate(0, anim.Gentle)
+			s.hover.Animate(0, anim.Spring{Response: 0.5, Damping: 1})
 		}
 	case input.PointerDown:
 		if e.Button != input.ButtonPrimary || s.length <= 0 {
 			return false
 		}
-		s.held, s.at = true, frac(e.Pos)
+		s.held, s.at, s.last = true, frac(e.Pos), e.Pos
+		s.head.Animate(s.at, anim.Spring{Response: 0.3, Damping: 0.85})
 	case input.PointerMove:
 		if !s.held {
 			return false
 		}
-		s.at = frac(e.Pos)
+		s.at, s.last = frac(e.Pos), e.Pos
+		s.head.Animate(s.at, anim.Spring{Response: 0.12, Damping: 1})
 	case input.PointerUp:
 		if !s.held {
 			return false
 		}
 		s.held = false
-		s.at = frac(e.Pos)
+		// The time shown as the drag ended is the time it lands on,
+		// though the lens has moved under the pointer since.
+		if e.Pos != s.last {
+			s.at = frac(e.Pos)
+		}
+		s.head.Animate(s.at, anim.Spring{Response: 0.3, Damping: 0.85})
+		s.flash.Jump(1)
+		s.flash.Animate(0, anim.Tween{Duration: 600 * time.Millisecond})
 		u.Send(s, SeekTo{At: time.Duration(float64(s.at) * float64(s.length))})
 		if e.Pos.Y < 0 || e.Pos.Y > s.size.H {
-			s.hover.Animate(0, anim.Gentle)
+			s.hover.Animate(0, anim.Spring{Response: 0.5, Damping: 1})
 		}
 	default:
 		return false
@@ -399,9 +472,30 @@ func (s *seekBar) Handle(e input.Event, u *gunim.UI) bool {
 	return true
 }
 
-// Step implements [gunim.Animator]: the playhead moves while the music
-// plays.
+// Step implements [gunim.Animator]: the playhead follows the track as
+// it plays, and glides where the track jumps.
 func (s *seekBar) Step(dt time.Duration) bool {
+	if !s.held {
+		at, length := s.n.d.position()
+		if length <= 0 {
+			length = s.length
+		}
+		if length > 0 {
+			to := float32(float64(at) / float64(length))
+			if d := to - s.head.Target(); d > 0.01 || d < -0.01 {
+				// A jump, as a seek from the keys or Back: glide there.
+				s.head.Animate(to, anim.Spring{Response: 0.4, Damping: 0.82})
+				if !s.flash.Active() {
+					s.flash.Jump(1)
+					s.flash.Animate(0, anim.Tween{Duration: 600 * time.Millisecond})
+				}
+			} else if s.head.Active() {
+				s.head.Retarget(to, anim.Spring{Response: 0.4, Damping: 0.82})
+			} else {
+				s.head.Jump(to)
+			}
+		}
+	}
 	moving := s.Group.Step(dt)
 	return moving || s.n.root.state.Playing
 }
@@ -418,41 +512,46 @@ func (s *seekBar) Paint(p *paint.Painter, _ gunim.Frame, box geom.Size, _ gunim.
 	if length <= 0 {
 		length = s.length
 	}
-	played := float32(0)
-	if length > 0 {
-		played = float32(float64(at) / float64(length))
-	}
 	if s.held {
-		played = s.at
 		at = time.Duration(float64(s.at) * float64(length))
 	}
+	head := float64(s.head.Value())
+	l := s.lensNow()
 	accent := s.accent.Value()
 	hover := s.hover.Value()
+	flash := s.flash.Value()
 	count := int(min(float32(peakCount), box.W/4))
-	step := box.W / float32(max(count, 1))
-	w := max(1.5, step*0.55)
 	mid := float32(barH) / 2
 	reveal := s.reveal.Value()
 	for i := range count {
+		u0, u1 := float64(i)/float64(count), float64(i+1)/float64(count)
+		uc := (u0 + u1) / 2
+		x0, x1 := float32(l.at(u0))*box.W, float32(l.at(u1))*box.W
+		w := max(1.5, (x1-x0)*0.55)
 		v := float32(0.15)
 		if len(s.peaks) > 0 {
 			v = s.peaks[i*len(s.peaks)/count]
 		}
 		// Each bar grows in a little after the one before.
 		grow := min(max(reveal*1.4-float32(i)/float32(count)*0.4, 0), 1)
-		h := (3 + v*(barH-6)*(0.8+0.2*hover)) * grow
-		x := float32(i) * step
-		c := faded(ink, 0.2)
-		if x+w/2 <= played*box.W {
+		// The lens lifts the bars it spreads, a little.
+		lift := float32(l.zoom(uc)-1/l.room(1)) / float32(lensHover+1) * 0.6
+		h := (3 + v*(barH-10)) * (1 + lift) * grow
+		c := faded(ink, 0.2+0.25*lift)
+		if uc <= head {
 			c = accent
 		}
-		p.RRect(geom.Rc(x+(step-w)/2, mid-h/2, w, max(h, 1)), w/2, paint.Solid(c))
+		if flash > 0.01 {
+			d := (uc - head) / (2 * lensWidth)
+			c = mix(c, ink, flash*0.7*float32(math.Exp(-d*d)))
+		}
+		p.RRect(geom.Rc((x0+x1)/2-w/2, mid-h/2, w, max(h, 1)), w/2, paint.Solid(c))
 	}
 	// The playhead.
 	if length > 0 {
-		x := played * box.W
-		hw := 1.5 + 1.5*hover
-		p.RRect(geom.Rc(x-hw, 0, 2*hw, barH), hw, paint.Solid(faded(ink, 0.5+0.5*hover)))
+		x := float32(l.at(head)) * box.W
+		hw := 1.5 + 1*hover
+		p.RRect(geom.Rc(x-hw, -2, 2*hw, barH+4), hw, paint.Solid(faded(ink, 0.6+0.4*hover)))
 	}
 	dim := faded(ink, 0.55)
 	left := shaped(clock(at), 12, false)
