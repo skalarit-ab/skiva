@@ -60,7 +60,7 @@ func main() {
 	runFor := flag.Duration("for", 0, "quit after this long; zero runs until the window closes")
 	shot := flag.String("shot", "", "write the window to this PNG file after -after, and quit")
 	after := flag.Duration("after", 2*time.Second, "how long -shot waits")
-	size := flag.String("size", "1100x720", "the window's size, as 400x820 for one shaped like a phone")
+	size := flag.String("size", "1100x720", "the window's size, as 400x820 for one shaped like a phone; without it the window opens where it last closed")
 	library := flag.Bool("library", false, "open with the library over the track playing, on a narrow window")
 	eqOpen := flag.Bool("eq", false, "open with the equalizer showing, for -shot")
 	infoOpen := flag.Bool("info", false, "open with the track's card showing, for -shot")
@@ -79,7 +79,13 @@ func main() {
 	}
 	start := startAt{on: *play, track: *track, at: *at}
 	lib := setup{file: *state, dir: *dir}
-	if err := run(lib, start, *library, *list, *eqOpen, *infoOpen, *runFor, *shot, *after, geom.Sz(w, h)); err != nil {
+	// The window opens where it last closed, unless asked for a size,
+	// or for a shot, which wants the same window every time.
+	var place *driver.Placement
+	if !flagSet("size") && *shot == "" {
+		place = placement(*state)
+	}
+	if err := run(lib, start, *library, *list, *eqOpen, *infoOpen, *runFor, *shot, *after, geom.Sz(w, h), place); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -91,7 +97,14 @@ type startAt struct {
 	at    time.Duration
 }
 
-func run(at setup, play startAt, library bool, list string, eqOpen, infoOpen bool, runFor time.Duration, shot string, after time.Duration, size geom.Size) error {
+// flagSet reports whether the flag of this name was given.
+func flagSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
+}
+
+func run(at setup, play startAt, library bool, list string, eqOpen, infoOpen bool, runFor time.Duration, shot string, after time.Duration, size geom.Size, place *driver.Placement) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	if runFor > 0 {
@@ -110,7 +123,11 @@ func run(at setup, play startAt, library bool, list string, eqOpen, infoOpen boo
 		d.spk = spk
 	}
 	err := gunim.Main(ctx, func(a *gunim.App) error {
-		w, err := a.NewWindow(gunim.WindowOptions{Title: "Music", Size: size, Icons: icons(), AskToClose: CloseAsked{}})
+		// The player draws the whole window, its title bar over it, as
+		// it draws under a phone's status bar.
+		w, err := a.NewWindow(gunim.WindowOptions{
+			Title: "Music", Size: size, Place: place, Icons: icons(), AskToClose: CloseAsked{}, UnderTitleBar: true,
+		})
 		if err != nil {
 			return fmt.Errorf("music: %w", err)
 		}
@@ -120,6 +137,7 @@ func run(at setup, play startAt, library bool, list string, eqOpen, infoOpen boo
 		at.home = a.UserFolder(driver.FolderMusic)
 		at.permitted = func() bool { return a.Permitted(driver.PermissionMusic) }
 		at.ask = func() bool { return a.Ask(driver.PermissionMusic) }
+		at.placement = w.Placement
 		c := w.Client()
 		if shot != "" {
 			go func() {

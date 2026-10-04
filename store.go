@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/marrasen/gunim/driver"
 )
 
 // saved is the library as it is kept between runs: the folders it
@@ -25,12 +27,23 @@ type saved struct {
 	GainMode *GainMode `json:",omitempty"`
 	// EQ is nil until the equalizer is first set.
 	EQ *EQ `json:",omitempty"`
+	// Window is where the window was as it last closed, and how big;
+	// nil until it has closed once.
+	Window *driver.Placement `json:",omitempty"`
 }
 
 // savedList is a playlist as kept: its tracks by their files.
 type savedList struct {
 	ID, Name string
 	Paths    []string
+}
+
+// placement is where the window was as it last closed, kept in file,
+// or nil where it has not closed yet. The window opens there, made safe
+// for the monitors attached now; see [gunim.WindowOptions.Place].
+func placement(file string) *driver.Placement {
+	s, _ := loadSaved(file)
+	return s.Window
 }
 
 // stateFile returns where the library is kept, in the user's settings.

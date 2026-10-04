@@ -354,6 +354,9 @@ type app struct {
 	home     string
 	askMusic func() bool
 	granted  chan bool
+	// placement says where the window is, to open it there next run;
+	// nil where there is no window to ask.
+	placement func() (driver.Placement, bool)
 }
 
 // spread is files dropped on a list, with the folders among them
@@ -382,6 +385,8 @@ type setup struct {
 	// permitted reports whether the player may read the user's music,
 	// and ask asks the user, as a phone's system does; nil for always.
 	permitted, ask func() bool
+	// placement says where the window is, kept as the window closes.
+	placement func() (driver.Placement, bool)
 }
 
 // newApp returns the application half, with the library kept in file
@@ -419,7 +424,7 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 	}
 	go a.z.run(ctx.Done())
 	a.choose = func(o driver.ChooseOptions) ([]string, error) { return c.ChooseFiles(ctx, o) }
-	a.home, a.askMusic = at.home, at.ask
+	a.home, a.askMusic, a.placement = at.home, at.ask, at.placement
 	kept, ok := loadSaved(at.file)
 	a.kept = kept
 	if !ok && at.home != "" {
@@ -581,6 +586,7 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 			}
 			if _, ok := ev.Intent.(CloseAsked); ok {
 				// The music fades out as the window does.
+				a.keepPlacement()
 				a.save()
 				a.d.fadeOut(closeFade)
 				c.Close()
@@ -590,6 +596,18 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 			a.prepareNext()
 		}
 		publish()
+	}
+}
+
+// keepPlacement notes where the window is and how big, to open it
+// there next run.
+func (a *app) keepPlacement() {
+	if a.placement == nil {
+		return
+	}
+	if p, ok := a.placement(); ok && (a.kept.Window == nil || *a.kept.Window != p) {
+		a.kept.Window = &p
+		a.dirty = true
 	}
 }
 
