@@ -565,7 +565,7 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 				e.analyzed(r.a)
 				a.refresh()
 				if cur := a.entries[a.Current]; cur != nil && albumKey(cur) == albumKey(e) {
-					a.applyGain(true)
+					a.applyGain()
 				}
 			}
 		case <-ended:
@@ -1076,13 +1076,13 @@ func (a *app) handle(in gunim.Intent) {
 			v := a.Volume
 			a.kept.Volume = &v
 		}
-		a.applyGain(true)
+		a.applyGain()
 	case SetEQ:
 		a.setEQ(in.EQ)
 		eq := in.EQ
 		a.kept.EQ = &eq
 		a.dirty = true
-		a.applyGain(true)
+		a.applyGain()
 	case ClearQueue:
 		gone := a.queue
 		a.queue = nil
@@ -1114,12 +1114,12 @@ func (a *app) handle(in gunim.Intent) {
 		v := a.Volume
 		a.kept.Volume = &v
 		a.dirty = true
-		a.applyGain(true)
+		a.applyGain()
 	case ToggleShuffle:
 		a.Shuffle = !a.Shuffle
 		a.kept.Shuffle = a.Shuffle
 		a.dirty = true
-		a.applyGain(true)
+		a.applyGain()
 	case CycleRepeat:
 		a.Repeat = (a.Repeat + 1) % 3
 		a.kept.Repeat = a.Repeat
@@ -1358,9 +1358,8 @@ func (a *app) albumLoudness(e *entry) (lufs float64, peak float32, ok bool) {
 	return 10 * math.Log10(energy/weight), peak, true
 }
 
-// applyGain sets the gain the track playing plays at, gliding to it
-// where it plays already.
-func (a *app) applyGain(glide bool) { a.d.setGain(a.gainFor(a.entries[a.Current]), glide) }
+// applyGain sets the gain the track playing plays at, gliding to it.
+func (a *app) applyGain() { a.d.setGain(a.gainFor(a.entries[a.Current]), true) }
 
 // gainFor returns the gain track e plays at, in decibels, and shows it
 // as the gain of the track playing.
