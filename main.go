@@ -112,7 +112,7 @@ func run(dir string, play startAt, library bool, runFor time.Duration, shot stri
 				c.Close()
 			}()
 		}
-		return serve(ctx, c, d, dir, play, a.KeepRunning)
+		return serve(ctx, c, d, dir, play, a.SetNowPlaying)
 	})
 	if errors.Is(err, driver.ErrNoDriver) {
 		log.Print("gunim has no driver for this operating system yet")

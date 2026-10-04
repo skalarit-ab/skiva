@@ -264,6 +264,10 @@ func (r *playerRoot) Handle(e input.Event, u *gunim.UI) bool {
 		return false
 	case input.KeyPress:
 		return r.key(e, u)
+	case input.MediaSeek:
+		// A seek from the system's media controls.
+		u.Send(r, SeekTo{At: e.At})
+		return true
 	}
 	return false
 }
@@ -271,8 +275,20 @@ func (r *playerRoot) Handle(e input.Event, u *gunim.UI) bool {
 func (r *playerRoot) key(k input.KeyPress, u *gunim.UI) bool {
 	at, _ := r.now.d.position()
 	switch k.Key {
-	case input.KeySpace, input.KeyK:
+	case input.KeySpace, input.KeyK, input.KeyMediaPlayPause:
 		u.Send(r, TogglePlay{})
+	case input.KeyMediaPlay:
+		if !r.state.Playing {
+			u.Send(r, TogglePlay{})
+		}
+	case input.KeyMediaPause, input.KeyMediaStop:
+		if r.state.Playing {
+			u.Send(r, TogglePlay{})
+		}
+	case input.KeyMediaNext:
+		u.Send(r, Skip{})
+	case input.KeyMediaPrevious:
+		u.Send(r, Skip{Back: true})
 	case input.KeyRight, input.KeyL:
 		u.Send(r, SeekTo{At: at + 5*time.Second})
 	case input.KeyLeft, input.KeyJ:

@@ -373,3 +373,32 @@ func TestADragLandsOnTheTimeItShowed(t *testing.T) {
 		t.Fatalf("a drag let go where it showed %v sent %v, want a seek there", want, got)
 	}
 }
+
+func TestTheMediaKeysAndSeeksWorkThePlayer(t *testing.T) {
+	s := library4()
+	s.Current, s.Playing = 1, true
+	w, _, run := stage(t, geom.Sz(1100, 720), s)
+	_ = w.Client().Focus("player")
+	run(1)
+	press := func(k input.Key) {
+		w.Input(input.KeyPress{Key: k})
+		run(1)
+	}
+	press(input.KeyMediaPlayPause)
+	press(input.KeyMediaPlay) // playing already: nothing
+	press(input.KeyMediaNext)
+	press(input.KeyMediaPrevious)
+	press(input.KeyMediaPause)
+	w.Input(input.MediaSeek{At: 30 * time.Second})
+	run(1)
+	got := intents(w)
+	want := []gunim.Intent{TogglePlay{}, Skip{}, Skip{Back: true}, TogglePlay{}, SeekTo{At: 30 * time.Second}}
+	if len(got) != len(want) {
+		t.Fatalf("the media keys and a seek sent %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("the media keys and a seek sent %v, want %v", got, want)
+		}
+	}
+}

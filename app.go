@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"image/color"
 	"log"
@@ -74,9 +75,15 @@ const (
 // playerTopic is what the player view watches.
 const playerTopic = "player"
 
-// keeper keeps the application running in the background while on, as
-// gunim.App.KeepRunning does.
-type keeper func(on bool, title, text string) error
+// nowShower shows what plays in the system's media controls, as
+// gunim.App.SetNowPlaying does.
+type nowShower func(np *gunim.NowPlaying) error
+
+// nowKey is what, changing, the media controls are told of.
+type nowKey struct {
+	id, starts, seeks int
+	playing           bool
+}
 
 // app is the application half.
 type app struct {
@@ -90,6 +97,8 @@ type app struct {
 	// history is the tracks played, for Back in shuffle.
 	history []int
 	rng     *rand.Rand
+	// seeks counts the seeks, for the media controls to hear of each.
+	seeks int
 	// peaksDone carries peaks read in the background.
 	peaksDone chan peaksRead
 }
@@ -100,7 +109,7 @@ type peaksRead struct {
 }
 
 // serve keeps the player's state and hears what the window sends.
-func serve(ctx context.Context, c gunim.Client, d *deck, dir string, play startAt, keep keeper) error {
+func serve(ctx context.Context, c gunim.Client, d *deck, dir string, play startAt, show nowShower) error {
 	a := &app{
 		d: d, entries: map[int]*entry{},
 		rng:       rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 7)),
@@ -139,25 +148,40 @@ func serve(ctx context.Context, c gunim.Client, d *deck, dir string, play startA
 	if dir == "" {
 		startPlay()
 	}
-	// While a track plays, a phone keeps the player running in the
-	// background, saying what plays.
-	var kept string
+	// The system's media controls, as a phone's lock screen, show what
+	// plays, as the track, its playing or a seek changes; the phone keeps
+	// the player running while it plays in the background.
+	var shown nowKey
+	covers := map[int][]byte{}
 	publish := func() {
 		_ = c.Publish(playerTopic, a.Player)
-		now := ""
-		if e := a.entries[a.Current]; a.Playing && e != nil {
-			now = e.Title + "\x00" + e.Artist
-		}
-		if now == kept || keep == nil {
-			return
-		}
-		kept = now
-		if now == "" {
-			_ = keep(false, "", "")
+		if show == nil {
 			return
 		}
 		e := a.entries[a.Current]
-		_ = keep(true, e.Title, e.Artist)
+		k := nowKey{id: a.Current, playing: a.Playing, starts: a.Starts, seeks: a.seeks}
+		if k == shown {
+			return
+		}
+		shown = k
+		if e == nil {
+			_ = show(nil)
+			return
+		}
+		if _, ok := covers[e.ID]; !ok && e.Cover != nil {
+			var b bytes.Buffer
+			if e.Cover.EncodePNG(&b) == nil {
+				covers[e.ID] = b.Bytes()
+			}
+		}
+		at, length := a.d.position()
+		if length <= 0 {
+			length = e.Length
+		}
+		_ = show(&gunim.NowPlaying{
+			Title: e.Title, Artist: e.Artist, Album: e.Album, Cover: covers[e.ID],
+			Length: length, Position: at, Playing: a.Playing,
+		})
 	}
 	publish()
 	// Tracks found come in batches, so a big folder does not publish
@@ -237,6 +261,7 @@ func (a *app) handle(in gunim.Intent) {
 		a.skip(in.Back)
 	case SeekTo:
 		a.d.seek(in.At)
+		a.seeks++
 	case SetVolume:
 		a.Volume = max(0, min(1, in.Volume))
 		a.d.setVolume(a.Volume)
