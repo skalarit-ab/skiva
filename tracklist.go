@@ -1091,20 +1091,28 @@ func (t *trackList) paintRow(p *paint.Painter, f gunim.Frame, tr Track, hot, y f
 		sub += tr.Album
 	}
 	paintFit(p, sub, 12, false, geom.Pt(textX, y+33), room, faded(ink, 0.5*alpha))
-	if t.editable() && (hot > 0.01 || lifted) {
-		// A playlist's row shows its grip as the pointer comes over it.
+	// A playlist's row shows its grip as the pointer comes over it,
+	// crossfading with the bars or the length that were there.
+	grip := float32(0)
+	if t.editable() {
+		grip = min(max(hot, 0), 1)
 		if lifted {
-			hot = 1
+			grip = 1
 		}
+	}
+	if grip > 0.01 {
 		g := geom.Rc(row.Max.X-gripW+10, y+(rowH-20)/2, 20, 20)
-		widget.PaintIcon(p, f.Theme, icon.GripVertical, g, faded(ink, 0.7*hot))
+		widget.PaintIcon(p, f.Theme, icon.GripVertical, g, faded(ink, 0.7*grip*alpha))
+	}
+	rest := alpha * (1 - grip)
+	if rest < 0.01 {
 		return
 	}
 	if playing {
-		paintBars(p, t.root.meter, geom.Pt(row.Max.X-34, y+rowH/2), faded(tr.Accent, alpha))
+		paintBars(p, t.root.meter, geom.Pt(row.Max.X-34, y+rowH/2), faded(tr.Accent, rest))
 	} else if tr.Length > 0 {
 		run := shaped(clock(tr.Length), 12, false)
-		run.Paint(p, geom.Pt(row.Max.X-12-run.Advance, y+22), faded(ink, 0.45*alpha))
+		run.Paint(p, geom.Pt(row.Max.X-12-run.Advance, y+22), faded(ink, 0.45*rest))
 	}
 }
 

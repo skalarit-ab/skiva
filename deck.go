@@ -27,6 +27,8 @@ type deck struct {
 	// gain is the loudness gain of the track playing, as a ratio, on
 	// top of the volume.
 	gain float32
+	// fading is done once the fade as the player closes has ended.
+	fading <-chan struct{}
 }
 
 // bandCount is how many bands of pitch the visuals draw.
@@ -148,5 +150,31 @@ func (d *deck) setGain(db float64, glide bool) {
 	d.gain = float32(math.Pow(10, db/20))
 	if d.voice != nil && glide {
 		d.voice.SetVolume(d.volume*d.gain, anim.Spring{Response: 0.8, Damping: 1})
+	}
+}
+
+// fadeOut fades the track playing out over fade, as the player closes;
+// quiet waits for it, at most for long.
+func (d *deck) fadeOut(fade time.Duration) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.voice == nil {
+		return
+	}
+	d.voice.Stop(fade)
+	d.fading = d.voice.Done()
+}
+
+// quiet waits for the fade fadeOut began to end, at most for long.
+func (d *deck) quiet(long time.Duration) {
+	d.mu.Lock()
+	done := d.fading
+	d.mu.Unlock()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(long):
 	}
 }

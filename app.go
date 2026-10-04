@@ -62,6 +62,9 @@ type (
 		// Headroom is how far the track plays lowered so the equalizer's
 		// boosts leave its peaks unclipped, in decibels.
 		Headroom float32
+		// Resumed counts the times the player took up the track and the
+		// list of its last run, so the window opens that list.
+		Resumed int
 	}
 	// EQ is the equalizer: its bands, and whether it is bypassed.
 	EQ struct {
@@ -207,6 +210,9 @@ type (
 	MoveInQueue struct{ From, To int }
 	// ClearQueue empties Up next.
 	ClearQueue struct{}
+	// CloseAsked asks to close the window: the music fades out as it
+	// closes.
+	CloseAsked struct{}
 	// SetGainMode sets how loudness gain evens tracks out.
 	SetGainMode struct{ Mode GainMode }
 	// SetEQ sets the equalizer, as it is changed: often, while a band
@@ -301,6 +307,10 @@ type app struct {
 	rng    *rand.Rand
 	// seeks counts the seeks, for the media controls to hear of each.
 	seeks int
+	// resume is the track of the last run, by its key, and the list
+	// it played from, to take up again once the library has it.
+	resume     string
+	resumeFrom ListID
 	// eqBoost is the most the equalizer lifts any frequency, in
 	// decibels, zero where it lifts none.
 	eqBoost float64
@@ -434,6 +444,12 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 	if !a.Scanning {
 		startPlay()
 	}
+	// Without -play, the player takes up the track and the list of its
+	// last run, paused, as soon as the library has the track.
+	if !play.on {
+		a.resume, a.resumeFrom = a.kept.Last, a.kept.LastFrom
+		a.takeUp()
+	}
 	// The system's media controls, as a phone's lock screen, show what
 	// plays, as the track, its playing or a seek changes; the phone keeps
 	// the player running while it plays in the background.
@@ -499,6 +515,7 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 			batch = nil
 			a.refresh()
 			a.startSoon()
+			a.takeUp()
 		case <-keep:
 			keep = nil
 			a.save()
@@ -522,6 +539,13 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 		case ev, ok := <-c.Intents():
 			if !ok {
 				return c.Err()
+			}
+			if _, ok := ev.Intent.(CloseAsked); ok {
+				// The music fades out as the window does.
+				a.save()
+				a.d.fadeOut(closeFade)
+				c.Close()
+				continue
 			}
 			a.handle(ev.Intent)
 		}
@@ -1098,6 +1122,62 @@ func (a *app) start(id int) {
 	}
 	a.Current, a.Playing = id, true
 	a.Starts++
+	a.remember(e)
+}
+
+// closeFade is how long the music takes to fade as the window closes.
+const closeFade = 700 * time.Millisecond
+
+// remember keeps e, and the list it plays from, for the next run.
+func (a *app) remember(e *entry) {
+	if a.kept.Last != e.key || a.kept.LastFrom != a.From {
+		a.kept.Last, a.kept.LastFrom = e.key, a.From
+		a.dirty = true
+	}
+}
+
+// takeUp takes up the track of the last run, paused, with the list it
+// played from, once the library has it; it lets it go once the folders
+// are read through without it, or something else plays.
+func (a *app) takeUp() {
+	if a.resume == "" {
+		return
+	}
+	if a.Current != 0 {
+		a.resume = ""
+		return
+	}
+	e := a.byKey[a.resume]
+	if e == nil {
+		if !a.Scanning {
+			a.resume = ""
+		}
+		return
+	}
+	a.resume = ""
+	a.From = AllTracks
+	if from := a.resumeFrom; from == QueueList || a.list(from) != nil {
+		a.From = from
+	}
+	if a.From == QueueList {
+		a.From = AllTracks
+	}
+	src, closer, err := e.open()
+	if err != nil {
+		return
+	}
+	if e.an == nil {
+		a.z.want(e, true)
+	}
+	a.gainFor(e, false)
+	a.voice = a.d.play(src, closer, true)
+	if slices.Contains(a.list(a.From), e.ID) {
+		a.listAt = e.ID
+	}
+	a.history = append(a.history, e.ID)
+	a.Current, a.Playing = e.ID, false
+	a.Starts++
+	a.Resumed++
 }
 
 // learn gives e what was kept of it from a run before, where its file

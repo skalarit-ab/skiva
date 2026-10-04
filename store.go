@@ -17,6 +17,10 @@ type saved struct {
 	Volume  *float32 `json:",omitempty"`
 	Shuffle bool
 	Repeat  Repeat
+	// Last is the track played last, by its key, and LastFrom the list
+	// it played from, to take up as the player starts.
+	Last     string `json:",omitempty"`
+	LastFrom ListID `json:",omitempty"`
 	// GainMode is nil until it is first set: album gain.
 	GainMode *GainMode `json:",omitempty"`
 	// EQ is nil until the equalizer is first set.

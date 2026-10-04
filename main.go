@@ -65,8 +65,15 @@ func main() {
 	library := flag.Bool("library", false, "open with the library over the track playing, on a narrow window")
 	eqOpen := flag.Bool("eq", false, "open with the equalizer showing, for -shot")
 	infoOpen := flag.Bool("info", false, "open with the track's card showing, for -shot")
+	iconOut := flag.String("write-icon", "", "write the icon, 512 pixels square, to this PNG file, and quit")
 	list := flag.String("list", "", "open the library on the list of this name, as a playlist's, for -shot")
 	flag.Parse()
+	if *iconOut != "" {
+		if err := writeIcon(*iconOut, 512); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	var w, h float32
 	if _, err := fmt.Sscanf(*size, "%gx%g", &w, &h); err != nil || w <= 0 || h <= 0 {
 		log.Fatalf("music: -size %q: want a width and a height, as 400x820", *size)
@@ -112,7 +119,7 @@ func run(at setup, play startAt, library bool, list string, eqOpen, infoOpen boo
 	}
 	d := newDeck(mix)
 	err := gunim.Main(ctx, func(a *gunim.App) error {
-		w, err := a.NewWindow(gunim.WindowOptions{Title: "Music", Size: size})
+		w, err := a.NewWindow(gunim.WindowOptions{Title: "Music", Size: size, Icons: icons(), AskToClose: CloseAsked{}})
 		if err != nil {
 			return fmt.Errorf("music: %w", err)
 		}
@@ -133,6 +140,8 @@ func run(at setup, play startAt, library bool, list string, eqOpen, infoOpen boo
 		}
 		return serve(ctx, c, d, at, play, a.SetNowPlaying)
 	})
+	// The music fades out after the window has gone.
+	d.quiet(2 * closeFade)
 	if errors.Is(err, driver.ErrNoDriver) {
 		log.Print("gunim has no driver for this operating system yet")
 		return nil

@@ -147,6 +147,8 @@ type playerRoot struct {
 	// it.
 	eq       *eqPanel
 	eqButton *iconButton
+	// resumed is the last of the application's Resumed taken.
+	resumed int
 	// info tells about the track playing, and infoButton opens it.
 	info       *infoCard
 	infoButton *iconButton
@@ -199,6 +201,13 @@ func (r *playerRoot) show(s Player, u *gunim.UI) {
 	r.now.show(was, s, t)
 	r.lib.show(s, u)
 	r.eq.take(s.EQ)
+	if s.Resumed != r.resumed {
+		// The player took up its last run's track: the list it played
+		// from opens, as it was.
+		r.resumed = s.Resumed
+		r.lib.openList(s.From, u)
+		r.lib.page.Jump(1)
+	}
 	r.eqButton.setLit(len(s.EQ.Bands) > 0 && !s.EQ.Bypass)
 	u.Invalidate()
 }
