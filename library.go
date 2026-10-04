@@ -47,7 +47,9 @@ func (e *entry) open() (audio.Seeker, func(), error) {
 	if e.song != nil {
 		return e.song.source(), func() {}, nil
 	}
-	f, err := os.Open(e.path)
+	// The file stays open while the track plays, and its folder may
+	// delete it meanwhile; the track plays on.
+	f, err := openShared(e.path)
 	if err != nil {
 		return nil, nil, err
 	}
