@@ -591,12 +591,28 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 				a.save()
 				a.d.fadeOut(closeFade)
 				c.Leave()
-				continue
+				return leaving(ctx, c)
 			}
 			a.handle(ev.Intent)
 			a.prepareNext()
 		}
 		publish()
+	}
+}
+
+// leaving waits for the window to close once it has begun to leave.
+// The player acts on nothing more meanwhile: a paused track ends at once
+// as it stops, and taking that for the track's end would play the next.
+func leaving(ctx context.Context, c gunim.Client) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case _, ok := <-c.Intents():
+			if !ok {
+				return c.Err()
+			}
+		}
 	}
 }
 
