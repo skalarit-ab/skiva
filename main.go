@@ -100,10 +100,15 @@ func run(at setup, play startAt, library bool, list string, eqOpen, infoOpen boo
 		defer cancel()
 	}
 	mix := audio.NewMixer()
-	if _, err := speaker.Open(mix, speaker.Options{Name: "gunim music"}); err != nil {
-		log.Printf("music: no sound: %v", err)
-	}
 	d := newDeck(mix)
+	// The player works a little further ahead than a game would: its
+	// buttons still answer at once, and the music rides out a busy
+	// moment.
+	if spk, err := speaker.Open(mix, speaker.Options{Name: "gunim music", Latency: seenLatency}); err != nil {
+		log.Printf("music: no sound: %v", err)
+	} else {
+		d.spk = spk
+	}
 	err := gunim.Main(ctx, func(a *gunim.App) error {
 		w, err := a.NewWindow(gunim.WindowOptions{Title: "Music", Size: size, Icons: icons(), AskToClose: CloseAsked{}})
 		if err != nil {

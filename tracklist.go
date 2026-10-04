@@ -426,9 +426,11 @@ func (l *library) Paint(p *paint.Painter, _ gunim.Frame, box geom.Size, kids gun
 		// window's bottom.
 		whole.Max.Y += radius
 	}
+	// Frosted glass: the track playing shows through, blurred, its
+	// colours and its light moving behind the lists.
 	end := p.Layer(paint.LayerOpts{Bounds: whole, Opacity: 1, Backdrop: 28, Clip: true, Radius: radius})
-	p.RRect(whole, radius, paint.Solid(faded(night, 0.55)))
-	p.RRect(whole, radius, paint.Solid(faded(ink, 0.03)))
+	p.RRect(whole, radius, paint.Solid(faded(night, 0.32)))
+	p.RRect(whole, radius, paint.Solid(faded(ink, 0.04)))
 	end()
 	if l.root.narrow {
 		p.RRect(geom.Rc(box.W/2-20, 8, 40, 4), 2, paint.Solid(faded(ink, 0.3)))

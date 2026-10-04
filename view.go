@@ -329,8 +329,11 @@ func (r *playerRoot) Paint(p *paint.Painter, _ gunim.Frame, box geom.Size, kids 
 	if s := r.sheet.Value(); !r.narrow {
 		kids.At(2).Paint(p)
 	} else if s > 0.001 {
-		// The window dims under the sheet as it rises.
-		p.RRect(geom.Rect{Max: box.Point()}, 0, paint.Solid(faded(night, 0.55*min(s, 1))))
+		// The window dims above the sheet as it rises; under it, the
+		// sheet's frosted glass blurs the track playing as it is, in its
+		// colours.
+		top := box.H - box.H*0.86*min(s, 1)
+		p.RRect(geom.Rc(0, 0, box.W, top+24), 0, paint.Solid(faded(night, 0.55*min(s, 1))))
 		kids.At(2).Paint(p)
 	}
 	if open := r.eq.open.Value(); open > 0.001 {
@@ -362,6 +365,15 @@ func (r *playerRoot) Handle(e input.Event, u *gunim.UI) bool {
 		return false
 	case input.KeyPress:
 		return r.key(e, u)
+	case input.WindowHidden:
+		// Out of sight, as with a phone's screen off, nothing needs the
+		// sound to answer at once: the speaker works further ahead, and
+		// the music rides out the system being busy elsewhere.
+		r.now.d.setSeen(false)
+		return false
+	case input.WindowShown:
+		r.now.d.setSeen(true)
+		return false
 	case input.MediaSeek:
 		// A seek from the system's media controls.
 		u.Send(r, SeekTo{At: e.At})

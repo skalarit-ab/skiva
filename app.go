@@ -312,6 +312,15 @@ type app struct {
 	// it played from, to take up again once the library has it.
 	resume     string
 	resumeFrom ListID
+	// upNext is the track queued in the deck to follow the one playing
+	// without a gap, at gain upGain; upFromQueue says it is Up next's
+	// first. shuffleNext is the track shuffle picked to follow
+	// shuffleFor, kept so Next and the queue agree.
+	upNext      *entry
+	upFromQueue bool
+	upGain      float64
+	shuffleFor  int
+	shuffleNext int
 	// eqBoost is the most the equalizer lifts any frequency, in
 	// decibels, zero where it lifts none.
 	eqBoost float64
@@ -506,11 +515,12 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 	// Tracks found come in batches, so a big folder does not publish
 	// the library once for each; the library is kept a moment after it
 	// changes, once for a burst of changes.
-	var batch, keep <-chan time.Time
+	var batch, keep, turnLater <-chan time.Time
+	var turnVoice *audio.Voice
 	for {
-		var ended <-chan struct{}
+		var ended, turned <-chan struct{}
 		if a.voice != nil {
-			ended = a.voice.Done()
+			ended, turned = a.voice.Done(), a.voice.Turned()
 		}
 		if (a.dirty || a.analysesDirty) && keep == nil {
 			keep = time.After(500 * time.Millisecond)
@@ -532,6 +542,7 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 			a.refresh()
 			a.startSoon()
 			a.takeUp()
+			a.prepareNext()
 		case <-keep:
 			keep = nil
 			a.save()
@@ -554,6 +565,16 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 			}
 		case <-ended:
 			a.ended()
+		case <-turned:
+			// The voice turned to the track queued, without a gap; the
+			// player moves on to it as the speakers reach it.
+			turnLater, turnVoice = time.After(a.d.lag()), a.voice
+			continue
+		case <-turnLater:
+			turnLater = nil
+			if a.voice == turnVoice {
+				a.turned()
+			}
 		case ev, ok := <-c.Intents():
 			if !ok {
 				return c.Err()
@@ -566,6 +587,7 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 				continue
 			}
 			a.handle(ev.Intent)
+			a.prepareNext()
 		}
 		publish()
 	}
@@ -1179,6 +1201,7 @@ func (a *app) start(id int) {
 	// plays from.
 	a.gainFor(e, false)
 	a.voice = a.d.play(src, closer, false)
+	a.upNext = nil
 	// The list playing goes on from its track played last.
 	if slices.Contains(a.list(a.From), id) {
 		a.listAt = id
@@ -1190,6 +1213,7 @@ func (a *app) start(id int) {
 	a.Current, a.Playing = id, true
 	a.Starts++
 	a.remember(e)
+	a.prepareNext()
 }
 
 // closeFade is how long the music takes to fade as the window closes.
@@ -1238,6 +1262,7 @@ func (a *app) takeUp() {
 	}
 	a.gainFor(e, false)
 	a.voice = a.d.play(src, closer, true)
+	a.upNext = nil
 	if slices.Contains(a.list(a.From), e.ID) {
 		a.listAt = e.ID
 	}
@@ -1245,6 +1270,7 @@ func (a *app) takeUp() {
 	a.Current, a.Playing = e.ID, false
 	a.Starts++
 	a.Resumed++
+	a.prepareNext()
 }
 
 // learn gives e what was kept of it from a run before, where its file
@@ -1327,12 +1353,97 @@ func (a *app) applyGain(glide bool) { a.gainFor(a.entries[a.Current], glide) }
 // room, and never drives the limiter on its own. The volume past full
 // may still: that is the listener's to choose.
 func (a *app) gainFor(e *entry, glide bool) {
+	db, by, album, headroom := a.gainAll(e)
+	a.Gain, a.GainBy, a.AlbumLUFS, a.Headroom = float32(db), by, float32(album), float32(headroom)
+	a.d.setGain(db-headroom, glide)
+}
+
+// gainAll returns e's loudness gain, what it follows and its album's
+// loudness, as gainOf does, and the headroom the equalizer takes from
+// it.
+func (a *app) gainAll(e *entry) (db float64, by GainSource, album, headroom float64) {
 	db, by, album, peak := a.gainOf(e)
 	vol := dB(float64(max(min(a.Volume, maxVolume(a.GainMode)), 1e-6)))
 	over := peak + db + min(vol, 0) + a.eqBoost
-	headroom := max(0, min(over, a.eqBoost))
-	a.Gain, a.GainBy, a.AlbumLUFS, a.Headroom = float32(db), by, float32(album), float32(headroom)
-	a.d.setGain(db-headroom, glide)
+	headroom = max(0, min(over, a.eqBoost))
+	return db, by, album, headroom
+}
+
+// peekNext returns the track to follow the one playing: itself again
+// on repeat one, Up next's first, or the next of the list playing, as
+// shuffle and repeat say; fromQueue says it is Up next's.
+func (a *app) peekNext() (e *entry, fromQueue bool) {
+	if a.Repeat == RepeatOne {
+		return a.entries[a.Current], false
+	}
+	for _, k := range a.queue {
+		if e := a.byKey[k]; e != nil {
+			return e, true
+		}
+	}
+	return a.entries[a.next()], false
+}
+
+// prepareNext queues the track to follow the one playing in the deck,
+// to play on into it without a gap, at its own gain: again wherever
+// what follows, or its gain, has changed since.
+func (a *app) prepareNext() {
+	if a.voice == nil || a.Current == 0 {
+		return
+	}
+	e, fromQueue := a.peekNext()
+	var gain float64
+	if e != nil {
+		db, _, _, headroom := a.gainAll(e)
+		gain = db - headroom
+	}
+	if e == a.upNext && fromQueue == a.upFromQueue && math.Abs(gain-a.upGain) < 0.01 {
+		return
+	}
+	a.upNext, a.upFromQueue, a.upGain = e, fromQueue, gain
+	if e == nil {
+		a.d.queue(nil, nil, 0)
+		return
+	}
+	src, closer, err := e.open()
+	if err != nil {
+		a.upNext = nil
+		a.d.queue(nil, nil, 0)
+		return
+	}
+	a.d.queue(src, closer, gain)
+}
+
+// turned moves the player on to the track queued, which the speakers
+// now play, run on from the last without a gap.
+func (a *app) turned() {
+	e, fromQueue := a.upNext, a.upFromQueue
+	a.upNext = nil
+	a.d.turned()
+	if e == nil {
+		return
+	}
+	if fromQueue {
+		if i := slices.Index(a.queue, e.key); i >= 0 {
+			a.queue = slices.Delete(a.queue, i, i+1)
+			a.refresh()
+		}
+	}
+	if a.Current != e.ID {
+		a.history = append(a.history, e.ID)
+		a.dropGone()
+	}
+	if !fromQueue && slices.Contains(a.list(a.From), e.ID) {
+		a.listAt = e.ID
+	}
+	a.Current = e.ID
+	a.Starts++
+	a.remember(e)
+	if e.an == nil {
+		a.z.want(e, true)
+	}
+	a.gainFor(e, false)
+	a.prepareNext()
 }
 
 // dropGone forgets the track playing if it has left the library, as
@@ -1422,8 +1533,14 @@ func (a *app) next() int {
 		if len(list) == 1 {
 			return list[0]
 		}
+		// The pick for this track holds, so the track queued to follow
+		// it is the one Next goes to.
+		if a.shuffleFor == a.Current && a.shuffleNext != a.Current && slices.Contains(list, a.shuffleNext) {
+			return a.shuffleNext
+		}
 		for {
 			if id := list[a.rng.IntN(len(list))]; id != a.Current {
+				a.shuffleFor, a.shuffleNext = a.Current, id
 				return id
 			}
 		}
