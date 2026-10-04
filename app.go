@@ -48,6 +48,16 @@ type (
 		// Scanning says the library is still reading a folder through
 		// for the first time.
 		Scanning bool
+		// EQ is the equalizer's settings.
+		EQ EQ
+	}
+	// EQ is the equalizer: its bands, and whether it is bypassed.
+	EQ struct {
+		Bands  []audio.Band
+		Bypass bool
+		// Seq counts the window's changes, so the window can tell its
+		// own settings coming back from older ones.
+		Seq int
 	}
 	// Track is one track of the library.
 	Track struct {
@@ -164,6 +174,9 @@ type (
 	MoveInQueue struct{ From, To int }
 	// ClearQueue empties Up next.
 	ClearQueue struct{}
+	// SetEQ sets the equalizer, as it is changed: often, while a band
+	// is dragged.
+	SetEQ struct{ EQ EQ }
 )
 
 // The settings of Repeat.
@@ -311,6 +324,9 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 		d.setVolume(a.Volume)
 	}
 	a.Shuffle, a.Repeat = kept.Shuffle, kept.Repeat
+	if kept.EQ != nil {
+		a.setEQ(*kept.EQ)
+	}
 	if at.dir != "" {
 		a.follow(at.dir)
 	}
@@ -819,6 +835,11 @@ func (a *app) handle(in gunim.Intent) {
 			a.queue = slices.Insert(slices.Delete(a.queue, from, from+1), to, k)
 			a.refresh()
 		}
+	case SetEQ:
+		a.setEQ(in.EQ)
+		eq := in.EQ
+		a.kept.EQ = &eq
+		a.dirty = true
 	case ClearQueue:
 		gone := a.queue
 		a.queue = nil
@@ -984,6 +1005,13 @@ func filePeaks(path string) []float32 {
 	}
 	defer closer()
 	return peaksOf(src)
+}
+
+// setEQ puts the equalizer's settings in play.
+func (a *app) setEQ(eq EQ) {
+	a.EQ = eq
+	a.d.eq.Set(eq.Bands)
+	a.d.eq.SetBypass(eq.Bypass)
 }
 
 // ended moves on as a track ends.

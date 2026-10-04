@@ -17,6 +17,8 @@ type saved struct {
 	Volume  *float32 `json:",omitempty"`
 	Shuffle bool
 	Repeat  Repeat
+	// EQ is nil until the equalizer is first set.
+	EQ *EQ `json:",omitempty"`
 }
 
 // savedList is a playlist as kept: its tracks by their files.

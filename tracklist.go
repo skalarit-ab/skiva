@@ -318,6 +318,7 @@ func (l *library) pick(i int, u *gunim.UI) {
 // menuItems gathers a menu's items, its captions and what each does.
 type menuItems struct {
 	items    []string
+	checked  []bool
 	icons    []*icon.Icon
 	captions []int
 	breaks   []int
@@ -330,6 +331,15 @@ func (m *menuItems) add(s string, ic *icon.Icon, do func(*gunim.UI)) {
 	m.do = append(m.do, do)
 }
 
+// addChecked adds an item with a tick where on.
+func (m *menuItems) addChecked(s string, on bool, do func(*gunim.UI)) {
+	for len(m.checked) < len(m.items) {
+		m.checked = append(m.checked, false)
+	}
+	m.checked = append(m.checked, on)
+	m.add(s, nil, do)
+}
+
 func (m *menuItems) caption(s string) {
 	m.captions = append(m.captions, len(m.items))
 	m.add(s, nil, nil)
@@ -340,7 +350,7 @@ func (m *menuItems) line() { m.breaks = append(m.breaks, len(m.items)) }
 // set puts the items in menu.
 func (m *menuItems) set(menu *widget.ContextMenu) {
 	menu.Items, menu.Icons, menu.Captions, menu.Breaks = m.items, m.icons, m.captions, m.breaks
-	menu.Checked, menu.Disabled, menu.Hints = nil, nil, nil
+	menu.Checked, menu.Disabled, menu.Hints = m.checked, nil, nil
 }
 
 // headH is the height of the heading over the lists.

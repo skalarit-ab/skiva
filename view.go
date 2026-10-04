@@ -17,7 +17,7 @@ import (
 
 // registerViews is the window half: the player's view, drawing from d
 // as it plays.
-func registerViews(w *gunim.Window, d *deck, openLibrary bool, list string) {
+func registerViews(w *gunim.Window, d *deck, openLibrary bool, list string, eqOpen bool) {
 	gunim.RegisterView(w, "player",
 		func(Player) *playerRoot {
 			r := newPlayerRoot(d)
@@ -25,6 +25,9 @@ func registerViews(w *gunim.Window, d *deck, openLibrary bool, list string) {
 				r.sheet.Jump(1)
 			}
 			r.lib.want = list
+			if eqOpen {
+				r.eq.open.Jump(1)
+			}
 			return r
 		},
 		func(r *playerRoot, s Player, u *gunim.UI) { r.show(s, u) })
@@ -134,8 +137,12 @@ type playerRoot struct {
 	// listButton opens it.
 	sheet      *anim.Float
 	listButton *iconButton
-	narrow     bool
-	size       geom.Size
+	// eq is the equalizer, over the track playing, and eqButton opens
+	// it.
+	eq       *eqPanel
+	eqButton *iconButton
+	narrow   bool
+	size     geom.Size
 }
 
 // narrowWidth is the width under which the library becomes a sheet.
@@ -151,6 +158,8 @@ func newPlayerRoot(d *deck) *playerRoot {
 	r.now = newNowPlaying(r, d)
 	r.lib = newLibrary(r)
 	r.listButton = newIconButton(icon.ListMusic, 40, func(u *gunim.UI) { r.openSheet(r.sheet.Target() < 0.5, u) })
+	r.eq = newEQPanel(r)
+	r.eqButton = newIconButton(icon.SlidersHorizontal, 40, func(u *gunim.UI) { r.eq.show(!r.eq.shown(), u) })
 	return r
 }
 
@@ -175,6 +184,8 @@ func (r *playerRoot) show(s Player, u *gunim.UI) {
 	r.bg.show(t)
 	r.now.show(was, s, t)
 	r.lib.show(s, u)
+	r.eq.take(s.EQ)
+	r.eqButton.setLit(len(s.EQ.Bands) > 0 && !s.EQ.Bypass)
 	u.Invalidate()
 }
 
@@ -199,7 +210,7 @@ func (r *playerRoot) Step(dt time.Duration) bool {
 
 // Children implements [gunim.Composite].
 func (r *playerRoot) Children() []gunim.Node {
-	return []gunim.Node{r.bg, r.now, r.lib, r.listButton}
+	return []gunim.Node{r.bg, r.now, r.lib, r.listButton, r.eqButton, r.eq}
 }
 
 // Focusable implements [gunim.Focusable]: the player's keys come here.
@@ -211,6 +222,28 @@ func (r *playerRoot) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Child
 	r.size = size
 	r.narrow = size.W < narrowWidth
 	bg, now, lib, btn := kids.At(0), kids.At(1), kids.At(2), kids.At(3)
+	eqBtn, eq := kids.At(4), kids.At(5)
+	defer func() {
+		// The equalizer rises from the bottom over the track playing,
+		// over the whole window where it is narrow.
+		eqArea := geom.Rect{Max: size.Point()}
+		safe := eqArea.Inset(f.Safe)
+		btnAt := geom.Pt(safe.Max.X-56, safe.Min.Y+16)
+		if r.narrow {
+			btnAt.X -= 48
+		} else {
+			eqArea.Min.X = sideWidth + f.Safe.Left
+		}
+		eqBtn.Layout(gunim.Tight(geom.Sz(40, 40)))
+		eqBtn.Place(btnAt)
+		open := r.eq.open.Value()
+		eq.Layout(gunim.Tight(eqArea.Size()))
+		if open < 0.001 {
+			eq.Place(geom.Pt(-10000, 0))
+		} else {
+			eq.Place(geom.Pt(eqArea.Min.X, eqArea.Min.Y+(1-open)*eqArea.Size().H))
+		}
+	}()
 	// The background, and the library's glass, run under a phone's
 	// bars; the track playing and the buttons keep clear of them.
 	bg.Layout(gunim.Tight(size))
@@ -248,9 +281,24 @@ func (r *playerRoot) Paint(p *paint.Painter, _ gunim.Frame, box geom.Size, kids 
 			kids.At(2).Paint(p)
 		}
 		kids.At(3).Paint(p)
+		kids.At(4).Paint(p)
+		r.paintEQ(p, box, kids)
 		return
 	}
 	kids.At(2).Paint(p)
+	kids.At(4).Paint(p)
+	r.paintEQ(p, box, kids)
+}
+
+// paintEQ draws the equalizer over everything, dimming what is under
+// it as it rises.
+func (r *playerRoot) paintEQ(p *paint.Painter, box geom.Size, kids gunim.Children) {
+	open := r.eq.open.Value()
+	if open < 0.001 {
+		return
+	}
+	p.RRect(geom.Rect{Max: box.Point()}, 0, paint.Solid(faded(night, 0.35*min(open, 1))))
+	kids.At(5).Paint(p)
 }
 
 // Handle implements [gunim.Handler]: the player's keys, and a tap
@@ -317,7 +365,19 @@ func (r *playerRoot) key(k input.KeyPress, u *gunim.UI) bool {
 		u.Send(r, ToggleShuffle{})
 	case input.KeyR:
 		u.Send(r, CycleRepeat{})
+	case input.KeyDelete, input.KeyBackspace:
+		if r.eq.shown() && r.eq.graph.sel != 0 {
+			r.eq.graph.remove(r.eq.graph.sel, u)
+			return true
+		}
+		return false
+	case input.KeyE:
+		r.eq.show(!r.eq.shown(), u)
 	case input.KeyEscape:
+		if r.eq.shown() {
+			r.eq.show(false, u)
+			return true
+		}
 		if r.narrow && r.sheet.Target() > 0.5 {
 			r.openSheet(false, u)
 			return true

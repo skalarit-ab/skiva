@@ -21,6 +21,8 @@ type deck struct {
 	volume float32
 	// an measures the mix, and bands holds what it measured last.
 	an *audio.Analyzer
+	// eq is the equalizer every track plays through.
+	eq *audio.EQ
 }
 
 // bandCount is how many bands of pitch the visuals draw.
@@ -29,7 +31,7 @@ const bandCount = 36
 func newDeck(mix *audio.Mixer) *deck {
 	an := audio.NewAnalyzer(mix, bandCount)
 	an.Tilt = 4
-	return &deck{mix: mix, volume: 0.8, an: an}
+	return &deck{mix: mix, volume: 0.8, an: an, eq: audio.NewEQ()}
 }
 
 // crossfade is how long a track playing fades out as another starts.
@@ -48,7 +50,8 @@ func (d *deck) play(src audio.Seeker, closer func(), paused bool) *audio.Voice {
 			oldClose()
 		}()
 	}
-	d.voice = d.mix.Play(src, audio.Options{Volume: d.volume, FadeIn: 30 * time.Millisecond, Paused: paused})
+	d.voice = d.mix.Play(src, audio.Options{Volume: d.volume, FadeIn: 30 * time.Millisecond, Paused: paused,
+		Insert: d.eq.Insert()})
 	d.closer = closer
 	return d.voice
 }
@@ -120,4 +123,12 @@ func (d *deck) measure(bands []float32) float32 {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.an.Bands(bands)
+}
+
+// spectrum fills heard and before with how loud the sound is at each
+// of freqs, in decibels: as heard, and before the equalizer.
+func (d *deck) spectrum(freqs, heard, before []float32) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.an.Spectrum(freqs, heard, before)
 }

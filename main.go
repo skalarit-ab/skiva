@@ -19,8 +19,13 @@
 // and gathered into playlists. The library is kept in the user's
 // settings, or in the file -state names.
 //
+// The equalizer is parametric: up to eight bands, each a bell, a shelf,
+// a cut or a notch, dragged about a graph with the sound's spectrum
+// before and after it behind them.
+//
 // Keys: Space plays and pauses, Left and Right seek, Up and Down set
-// the volume, N and P skip, S shuffles, R repeats.
+// the volume, N and P skip, S shuffles, R repeats, E opens the
+// equalizer.
 package main
 
 import (
@@ -53,6 +58,7 @@ func main() {
 	after := flag.Duration("after", 2*time.Second, "how long -shot waits")
 	size := flag.String("size", "1100x720", "the window's size, as 400x820 for one shaped like a phone")
 	library := flag.Bool("library", false, "open with the library over the track playing, on a narrow window")
+	eqOpen := flag.Bool("eq", false, "open with the equalizer showing, for -shot")
 	list := flag.String("list", "", "open the library on the list of this name, as a playlist's, for -shot")
 	flag.Parse()
 	var w, h float32
@@ -61,7 +67,7 @@ func main() {
 	}
 	start := startAt{on: *play, track: *track, at: *at}
 	lib := setup{file: *state, dir: *dir, home: defaultDir()}
-	if err := run(lib, start, *library, *list, *runFor, *shot, *after, geom.Sz(w, h)); err != nil {
+	if err := run(lib, start, *library, *list, *eqOpen, *runFor, *shot, *after, geom.Sz(w, h)); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -86,7 +92,7 @@ type startAt struct {
 	at    time.Duration
 }
 
-func run(at setup, play startAt, library bool, list string, runFor time.Duration, shot string, after time.Duration, size geom.Size) error {
+func run(at setup, play startAt, library bool, list string, eqOpen bool, runFor time.Duration, shot string, after time.Duration, size geom.Size) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	if runFor > 0 {
@@ -104,7 +110,7 @@ func run(at setup, play startAt, library bool, list string, runFor time.Duration
 		if err != nil {
 			return fmt.Errorf("music: %w", err)
 		}
-		registerViews(w, d, library, list)
+		registerViews(w, d, library, list, eqOpen)
 		c := w.Client()
 		if shot != "" {
 			go func() {
