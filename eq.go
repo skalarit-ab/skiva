@@ -1150,7 +1150,7 @@ func (s *eqStrip) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, _ gunim.
 	if b == nil {
 		msg := "Pick a band to change it. Drag a point to move it, scroll on it to change its width, and right-click it for more."
 		if box.W < 640 {
-			msg = "Tap a point to change its band, drag it to move it, and hold it for more."
+			msg = "Tap a point to pick it, drag to move it, hold for more."
 		}
 		paintFit(p, msg, 13, false, geom.Pt(4, 26), box.W-8, faded(ink, 0.5))
 		return

@@ -171,7 +171,12 @@ func newPlayerRoot(d *deck) *playerRoot {
 	r.listButton = newIconButton(icon.ListMusic, 40, func(u *gunim.UI) { r.openSheet(r.sheet.Target() < 0.5, u) })
 	r.eq = newEQPanel(r)
 	r.eqButton = newIconButton(icon.SlidersHorizontal, 40, func(u *gunim.UI) {
-		r.info.show(false, u)
+		if r.info.shown() {
+			r.info.show(false, u)
+		}
+		if r.narrow && r.sheet.Target() > 0.5 {
+			r.openSheet(false, u)
+		}
 		r.eq.show(!r.eq.shown(), u)
 	})
 	r.info = newInfoCard(r)
@@ -216,6 +221,14 @@ func (r *playerRoot) openSheet(on bool, u *gunim.UI) {
 	to := float32(0)
 	if on {
 		to = 1
+		// The library takes the window: the track's card and the
+		// equalizer make way.
+		if r.info.shown() {
+			r.info.show(false, u)
+		}
+		if r.eq.shown() {
+			r.eq.show(false, u)
+		}
 	}
 	r.sheet.Animate(to, anim.Spring{Response: 0.42, Damping: 0.86})
 	u.Invalidate()
@@ -248,9 +261,11 @@ func (r *playerRoot) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Child
 	eqBtn, eq := kids.At(4), kids.At(5)
 	defer func() {
 		// The equalizer rises from the bottom over the track playing,
-		// over the whole window where it is narrow.
+		// over the whole window where it is narrow, up to the row of
+		// buttons along the top, which stays.
 		eqArea := geom.Rect{Max: size.Point()}
 		safe := eqArea.Inset(f.Safe)
+		eqArea.Min.Y = safe.Min.Y + 64
 		btnAt := geom.Pt(safe.Max.X-56, safe.Min.Y+16)
 		if r.narrow {
 			btnAt.X -= 48
@@ -263,12 +278,7 @@ func (r *playerRoot) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Child
 		// equalizer's, under it, at the window's right.
 		infoAt := btnAt.Sub(geom.Pt(48, 0))
 		kids.At(6).Layout(gunim.Tight(geom.Sz(40, 40)))
-		if r.eq.open.Value() > 0.01 {
-			// The equalizer has buttons of its own there.
-			kids.At(6).Place(geom.Pt(-10000, 0))
-		} else {
-			kids.At(6).Place(infoAt)
-		}
+		kids.At(6).Place(infoAt)
 		card := kids.At(7).Layout(gunim.Loose(geom.Sz(min(infoW, safe.Size().W-24), safe.Size().H)))
 		cardAt := geom.Pt(max(safe.Min.X+12, btnAt.X+40-card.W), btnAt.Y+52)
 		r.info.from = infoAt.Add(geom.Pt(20, 20)).Sub(cardAt)
@@ -310,37 +320,29 @@ func (r *playerRoot) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Child
 }
 
 // Paint implements [gunim.Node].
+// Paint implements [gunim.Node]: the track playing, the library over
+// it or beside it, the equalizer over both, then the row of buttons,
+// over everything but the track's card.
 func (r *playerRoot) Paint(p *paint.Painter, _ gunim.Frame, box geom.Size, kids gunim.Children) {
 	kids.At(0).Paint(p)
 	kids.At(1).Paint(p)
+	if s := r.sheet.Value(); !r.narrow {
+		kids.At(2).Paint(p)
+	} else if s > 0.001 {
+		// The window dims under the sheet as it rises.
+		p.RRect(geom.Rect{Max: box.Point()}, 0, paint.Solid(faded(night, 0.55*min(s, 1))))
+		kids.At(2).Paint(p)
+	}
+	if open := r.eq.open.Value(); open > 0.001 {
+		p.RRect(geom.Rect{Max: box.Point()}, 0, paint.Solid(faded(night, 0.35*min(open, 1))))
+		kids.At(5).Paint(p)
+	}
 	if r.narrow {
-		s := r.sheet.Value()
-		if s > 0.001 {
-			// The window dims under the sheet as it rises.
-			p.RRect(geom.Rect{Max: box.Point()}, 0, paint.Solid(faded(night, 0.55*min(s, 1))))
-			kids.At(2).Paint(p)
-		}
 		kids.At(3).Paint(p)
-		kids.At(4).Paint(p)
-		r.paintEQ(p, box, kids)
-		return
 	}
-	kids.At(2).Paint(p)
 	kids.At(4).Paint(p)
-	r.paintEQ(p, box, kids)
-}
-
-// paintEQ draws the equalizer over everything, dimming what is under
-// it as it rises, and the track's card and its button over that.
-func (r *playerRoot) paintEQ(p *paint.Painter, box geom.Size, kids gunim.Children) {
-	defer kids.At(7).Paint(p)
-	defer kids.At(6).Paint(p)
-	open := r.eq.open.Value()
-	if open < 0.001 {
-		return
-	}
-	p.RRect(geom.Rect{Max: box.Point()}, 0, paint.Solid(faded(night, 0.35*min(open, 1))))
-	kids.At(5).Paint(p)
+	kids.At(6).Paint(p)
+	kids.At(7).Paint(p)
 }
 
 // Handle implements [gunim.Handler]: the player's keys, and a tap

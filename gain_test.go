@@ -222,16 +222,37 @@ func TestTheVolumeBarReadsBackWhereItPutsAVolume(t *testing.T) {
 	}
 }
 
-func TestTheInfoButtonMakesWayForTheEqualizer(t *testing.T) {
-	w, root, run := stage(t, geom.Sz(1100, 720), library4())
+func TestTheButtonsStayInARowAboveTheEqualizer(t *testing.T) {
+	for _, size := range []geom.Size{geom.Sz(1100, 720), geom.Sz(400, 820)} {
+		w, root, run := stage(t, size, library4())
+		withUI(t, w, run, func(u *gunim.UI) { root.info.show(true, u) })
+		b := boundsOf(t, w, run, root.eqButton)
+		tap(w, run, b.Min.Add(geom.Pt(20, 20)))
+		run(60)
+		if root.info.shown() {
+			t.Fatalf("%v: the track's card stayed open as the equalizer opened", size)
+		}
+		eq := boundsOf(t, w, run, root.eq)
+		buttons := []gunim.Node{root.infoButton, root.eqButton}
+		if root.narrow {
+			buttons = append(buttons, root.listButton)
+		}
+		for _, n := range buttons {
+			if r := boundsOf(t, w, run, n); r.Min.X < 0 || r.Max.Y > eq.Min.Y {
+				t.Fatalf("%v: a button is at %v, the equalizer from %v; want the button in place, above it", size, r, eq.Min)
+			}
+		}
+	}
+}
+
+func TestTheLibraryOpeningPutsTheCardAway(t *testing.T) {
+	w, root, run := stage(t, geom.Sz(400, 820), library4())
 	withUI(t, w, run, func(u *gunim.UI) { root.info.show(true, u) })
-	b := boundsOf(t, w, run, root.eqButton)
+	run(30)
+	b := boundsOf(t, w, run, root.listButton)
 	tap(w, run, b.Min.Add(geom.Pt(20, 20)))
 	run(30)
 	if root.info.shown() {
-		t.Fatal("the track's card stayed open as the equalizer opened")
-	}
-	if ib := boundsOf(t, w, run, root.infoButton); ib.Min.X > 0 {
-		t.Fatalf("with the equalizer open, the info button is at %v, over the equalizer's own", ib)
+		t.Fatal("the track's card stayed open over the library")
 	}
 }
