@@ -59,6 +59,9 @@ type (
 		Gain      float32
 		GainBy    GainSource
 		AlbumLUFS float32
+		// Headroom is how far the track plays lowered so the equalizer's
+		// boosts leave its peaks unclipped, in decibels.
+		Headroom float32
 	}
 	// EQ is the equalizer: its bands, and whether it is bypassed.
 	EQ struct {
@@ -134,7 +137,9 @@ type (
 	Skip struct{ Back bool }
 	// SeekTo moves the track playing.
 	SeekTo struct{ At time.Duration }
-	// SetVolume sets the volume, 0 to 1.
+	// SetVolume sets the volume, 0 to 1, and while loudness gain is on
+	// up to maxBoost, past full: 2 lifts every track 6 dB over the
+	// level the gain brings it to.
 	SetVolume struct{ Volume float32 }
 	// ToggleShuffle turns shuffle on or off.
 	ToggleShuffle struct{}
@@ -216,6 +221,20 @@ const (
 	RepeatOne
 )
 
+// boostDB is how far past full the volume goes while loudness gain is
+// on, in decibels, and maxBoost that as a volume.
+const boostDB = 12
+
+var maxBoost = float32(math.Pow(10, boostDB/20.0))
+
+// maxVolume returns the loudest the volume goes in mode m.
+func maxVolume(m GainMode) float32 {
+	if m == GainOff {
+		return 1
+	}
+	return maxBoost
+}
+
 // The settings of GainMode, and what a gain may follow.
 const (
 	GainOff GainMode = iota
@@ -282,6 +301,9 @@ type app struct {
 	rng    *rand.Rand
 	// seeks counts the seeks, for the media controls to hear of each.
 	seeks int
+	// eqBoost is the most the equalizer lifts any frequency, in
+	// decibels, zero where it lifts none.
+	eqBoost float64
 	// z reads tracks through in the background, for their loudness and
 	// their peaks, which analyses keeps, in afile; analysesDirty says
 	// they changed since they were written.
@@ -374,15 +396,16 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 		a.kept.Folders = append(a.kept.Folders, at.home)
 		a.dirty = true
 	}
-	if kept.Volume != nil {
-		a.Volume = max(0, min(1, *kept.Volume))
-		d.setVolume(a.Volume)
-	}
 	a.Shuffle, a.Repeat = kept.Shuffle, kept.Repeat
 	if kept.GainMode != nil {
 		a.GainMode = *kept.GainMode
 	} else {
 		a.GainMode = GainAlbum
+	}
+	// The volume, after the gain mode: with gain on it may pass full.
+	if kept.Volume != nil {
+		a.Volume = max(0, min(maxVolume(a.GainMode), *kept.Volume))
+		d.setVolume(a.Volume)
 	}
 	if kept.EQ != nil {
 		a.setEQ(*kept.EQ)
@@ -913,12 +936,21 @@ func (a *app) handle(in gunim.Intent) {
 		m := in.Mode
 		a.kept.GainMode = &m
 		a.dirty = true
+		// Past full, the volume needs the gain: with it off, the volume
+		// comes back to full.
+		if a.Volume > maxVolume(m) {
+			a.Volume = maxVolume(m)
+			a.d.setVolume(a.Volume)
+			v := a.Volume
+			a.kept.Volume = &v
+		}
 		a.applyGain(true)
 	case SetEQ:
 		a.setEQ(in.EQ)
 		eq := in.EQ
 		a.kept.EQ = &eq
 		a.dirty = true
+		a.applyGain(true)
 	case ClearQueue:
 		gone := a.queue
 		a.queue = nil
@@ -945,11 +977,12 @@ func (a *app) handle(in gunim.Intent) {
 		a.d.seek(in.At)
 		a.seeks++
 	case SetVolume:
-		a.Volume = max(0, min(1, in.Volume))
+		a.Volume = max(0, min(maxVolume(a.GainMode), in.Volume))
 		a.d.setVolume(a.Volume)
 		v := a.Volume
 		a.kept.Volume = &v
 		a.dirty = true
+		a.applyGain(true)
 	case ToggleShuffle:
 		a.Shuffle = !a.Shuffle
 		a.kept.Shuffle = a.Shuffle
@@ -1082,25 +1115,31 @@ func (a *app) learn(e *entry) {
 
 // gainOf returns the gain e plays at, in decibels, what it follows,
 // and its album's loudness where that is it.
-func (a *app) gainOf(e *entry) (db float64, by GainSource, album float64) {
+// It returns too the peak that gain lifts, in dBFS, zero where it is
+// not known yet.
+func (a *app) gainOf(e *entry) (db float64, by GainSource, album, peak float64) {
+	if e != nil && e.an != nil && e.an.Peak > 0 {
+		peak = dB(float64(e.an.Peak))
+	}
 	if e == nil || a.GainMode == GainOff {
-		return 0, GainNone, 0
+		return 0, GainNone, 0, peak
 	}
 	if e.an == nil {
-		return 0, GainMeasuring, 0
+		return 0, GainMeasuring, 0, peak
 	}
 	// Album gain fits an album played in order; shuffled, or from a
 	// list of many albums' tracks, each track evens out on its own.
 	if a.GainMode == GainAlbum && !a.Shuffle && (a.From == AllTracks || strings.HasPrefix(string(a.From), "f:")) {
-		if lufs, peak, ok := a.albumLoudness(e); ok {
-			return min(targetLUFS-lufs, -dB(float64(max(peak, 1e-6)))), GainByAlbum, lufs
+		if lufs, p, ok := a.albumLoudness(e); ok {
+			peak = dB(float64(max(p, 1e-6)))
+			return min(targetLUFS-lufs, -peak), GainByAlbum, lufs, peak
 		}
 	}
 	if !e.an.Loud {
-		return 0, GainNone, 0
+		return 0, GainNone, 0, peak
 	}
 	// A track lifted plays no louder than its peak lets it, unclipped.
-	return min(targetLUFS-e.an.LUFS, -dB(float64(max(e.an.Peak, 1e-6)))), GainByTrack, 0
+	return min(targetLUFS-e.an.LUFS, -peak), GainByTrack, 0, peak
 }
 
 // albumKey names e's album: its title, in its folder.
@@ -1134,10 +1173,19 @@ func (a *app) albumLoudness(e *entry) (lufs float64, peak float32, ok bool) {
 func (a *app) applyGain(glide bool) { a.gainFor(a.entries[a.Current], glide) }
 
 // gainFor sets the gain track e plays at, gliding to it where glide.
+//
+// The equalizer's boosts would lift the track's peaks with them: the
+// track plays lowered by as much of the boost as would take its peaks
+// past full scale, and no more, so a boost still lifts where there is
+// room, and never drives the limiter on its own. The volume past full
+// may still: that is the listener's to choose.
 func (a *app) gainFor(e *entry, glide bool) {
-	db, by, album := a.gainOf(e)
-	a.Gain, a.GainBy, a.AlbumLUFS = float32(db), by, float32(album)
-	a.d.setGain(db, glide)
+	db, by, album, peak := a.gainOf(e)
+	vol := dB(float64(max(min(a.Volume, maxVolume(a.GainMode)), 1e-6)))
+	over := peak + db + min(vol, 0) + a.eqBoost
+	headroom := max(0, min(over, a.eqBoost))
+	a.Gain, a.GainBy, a.AlbumLUFS, a.Headroom = float32(db), by, float32(album), float32(headroom)
+	a.d.setGain(db-headroom, glide)
 }
 
 // dropGone forgets the track playing if it has left the library, as
@@ -1148,11 +1196,19 @@ func (a *app) dropGone() {
 	}
 }
 
-// setEQ puts the equalizer's settings in play.
+// setEQ puts the equalizer's settings in play, and works out the most
+// it lifts any frequency.
 func (a *app) setEQ(eq EQ) {
 	a.EQ = eq
 	a.d.eq.Set(eq.Bands)
 	a.d.eq.SetBypass(eq.Bypass)
+	a.eqBoost = 0
+	if !eq.Bypass {
+		for i := range 200 {
+			hz := 20 * math.Pow(1000, float64(i)/199)
+			a.eqBoost = max(a.eqBoost, audio.Response(eq.Bands, hz))
+		}
+	}
 }
 
 // ended moves on as a track ends.

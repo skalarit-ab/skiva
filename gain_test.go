@@ -131,7 +131,7 @@ func TestTheVolumeBarShowsTheGainAsThePointerComesOver(t *testing.T) {
 	s.GainMode, s.Gain, s.GainBy = GainTrack, 4, GainByTrack
 	w, root, run := stage(t, geom.Sz(1100, 720), s)
 	v := root.now.volume
-	if v.words[0] != "+4.0 dB track gain" || v.words[1] != "-22.0 LUFS to -18" {
+	if v.words[0] != "+4.0 dB track gain" || v.words[1] != "-22.0 LUFS, plays at -19.9 LUFS" {
 		t.Fatalf("the bar says %q, want the track gain and its loudness", v.words)
 	}
 	b := boundsOf(t, w, run, v)
@@ -155,4 +155,83 @@ func TestTheVolumeBarShowsTheGainAsThePointerComesOver(t *testing.T) {
 	}
 }
 
-var _ = gunim.Root
+func TestTheVolumePassesFullOnlyWhileGainIsOn(t *testing.T) {
+	a := newApp(context.Background(), newDeck(audio.NewMixer()), "")
+	a.handle(SetGainMode{Mode: GainTrack})
+	a.handle(SetVolume{Volume: 2.5})
+	if a.Volume != 2.5 {
+		t.Fatalf("with gain on, the volume went to %v, want 2.5", a.Volume)
+	}
+	a.handle(SetVolume{Volume: 9})
+	if a.Volume != maxBoost {
+		t.Fatalf("the volume went to %v, want no further than %v, +%d dB", a.Volume, maxBoost, boostDB)
+	}
+	a.handle(SetGainMode{Mode: GainOff})
+	if a.Volume != 1 {
+		t.Fatalf("with gain turned off, the volume is %v, want full, 1", a.Volume)
+	}
+	a.handle(SetVolume{Volume: 2})
+	if a.Volume != 1 {
+		t.Fatalf("with gain off, the volume went to %v, want no further than 1", a.Volume)
+	}
+}
+
+func TestTheEqualizersBoostsLowerATrackOnlyAsFarAsItsPeakNeeds(t *testing.T) {
+	a := newApp(context.Background(), newDeck(audio.NewMixer()), "")
+	all := ids(a)
+	// A track peaking at -1 dBFS, played as it is, with gain off.
+	a.entries[all[0]].analyzed(analysis{Loud: true, LUFS: -12, Peak: float32(math.Pow(10, -1.0/20))})
+	a.handle(SetGainMode{Mode: GainOff})
+	a.handle(SetVolume{Volume: 1})
+	a.handle(PlayTrack{ID: all[0]})
+	a.handle(SetEQ{EQ: EQ{Bands: []audio.Band{{ID: 1, Kind: audio.Bell, Freq: 100, Gain: 6, Q: 1, On: true}}}})
+	// The bell would lift its peak 6 dB, 5 past full: it plays 5 dB
+	// lower.
+	if math.Abs(float64(a.Headroom)-5) > 0.05 {
+		t.Fatalf("at full volume the headroom is %.2f dB, want 5", a.Headroom)
+	}
+	// At half volume, 6 dB down, the boost fits.
+	a.handle(SetVolume{Volume: 0.5})
+	if a.Headroom > 0.05 {
+		t.Fatalf("at half volume the headroom is %.2f dB, want none", a.Headroom)
+	}
+	a.handle(SetVolume{Volume: 1})
+	a.handle(SetEQ{EQ: EQ{Bands: []audio.Band{{ID: 1, Kind: audio.Bell, Freq: 100, Gain: 6, Q: 1, On: true}}, Bypass: true}})
+	if a.Headroom != 0 {
+		t.Fatalf("bypassed, the equalizer still takes %.2f dB", a.Headroom)
+	}
+}
+
+func TestTheVolumeBarReadsBackWhereItPutsAVolume(t *testing.T) {
+	s := library4()
+	s.GainMode = GainTrack
+	_, root, run := stage(t, geom.Sz(1100, 720), s)
+	run(60)
+	v := root.now.volume
+	for u := float32(0); u <= 1; u += 0.05 {
+		if got := v.along(v.volumeAt(u)); math.Abs(float64(got-u)) > 1e-4 {
+			t.Fatalf("at %.2f along, the volume reads back %.4f along", u, got)
+		}
+	}
+	// Full lies three quarters along, and +6 dB halfway past it.
+	if f := v.along(1); math.Abs(float64(f)-0.75) > 1e-4 {
+		t.Fatalf("full volume lies %v along, want 0.75", f)
+	}
+	if got := v.along(float32(math.Pow(10, 6.0/20))); math.Abs(float64(got)-0.875) > 1e-3 {
+		t.Fatalf("+6 dB lies %v along, want 0.875", got)
+	}
+}
+
+func TestTheInfoButtonMakesWayForTheEqualizer(t *testing.T) {
+	w, root, run := stage(t, geom.Sz(1100, 720), library4())
+	withUI(t, w, run, func(u *gunim.UI) { root.info.show(true, u) })
+	b := boundsOf(t, w, run, root.eqButton)
+	tap(w, run, b.Min.Add(geom.Pt(20, 20)))
+	run(30)
+	if root.info.shown() {
+		t.Fatal("the track's card stayed open as the equalizer opened")
+	}
+	if ib := boundsOf(t, w, run, root.infoButton); ib.Min.X > 0 {
+		t.Fatalf("with the equalizer open, the info button is at %v, over the equalizer's own", ib)
+	}
+}

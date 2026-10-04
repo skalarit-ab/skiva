@@ -752,6 +752,9 @@ type volumeBar struct {
 	by     GainSource
 	gainOn *anim.Float
 	words  [2]string
+	// boost opens the stretch past full at the bar's end, while
+	// loudness gain is on.
+	boost *anim.Float
 	// before is the volume before a mute, for the speaker to bring back.
 	before float32
 	shown  *anim.Float
@@ -763,8 +766,8 @@ type volumeBar struct {
 
 func newVolumeBar(n *nowPlaying) *volumeBar {
 	v := &volumeBar{n: n, shown: anim.NewFloat(0.8), hover: anim.NewFloat(0), accent: anim.NewColor(neutral), before: 0.8,
-		gainOn: anim.NewFloat(0)}
-	v.Add(v.shown, v.hover, v.accent, v.gainOn)
+		gainOn: anim.NewFloat(0), boost: anim.NewFloat(0)}
+	v.Add(v.shown, v.hover, v.accent, v.gainOn, v.boost)
 	return v
 }
 
@@ -785,7 +788,7 @@ func (v *volumeBar) DragsTouch() bool { return true }
 // Handle implements [gunim.Handler].
 func (v *volumeBar) Handle(e input.Event, u *gunim.UI) bool {
 	x0, x1 := v.track()
-	at := func(p geom.Point) float32 { return min(max((p.X-x0)/(x1-x0), 0), 1) }
+	at := func(p geom.Point) float32 { return v.volumeAt(min(max((p.X-x0)/(x1-x0), 0), 1)) }
 	switch e := e.(type) {
 	case input.PointerEnter:
 		v.hover.Animate(1, anim.Snappy)
@@ -855,24 +858,69 @@ func (v *volumeBar) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, _ guni
 	widget.PaintIcon(p, f.Theme, ic, geom.Rc(4, mid-10, 20, 20), faded(ink, 0.7))
 	x0, x1 := v.track()
 	h := 4 + 2*v.hover.Value()
+	accent := v.accent.Value()
 	p.RRect(geom.Rc(x0, mid-h/2, x1-x0, h), h/2, paint.Solid(faded(ink, 0.15)))
-	p.RRect(geom.Rc(x0, mid-h/2, (x1-x0)*vol, h), h/2, paint.Solid(v.accent.Value()))
+	full := x0 + (x1-x0)*v.full()
+	kx := x0 + (x1-x0)*v.along(vol)
+	if b := min(max(v.boost.Value(), 0), 1); b > 0.01 {
+		// Past full: a warmer stretch, marked off where full is, as the
+		// loudest tracks reach the limiter there.
+		p.RRect(geom.Rc(full, mid-h/2, x1-full, h), h/2, paint.Solid(faded(hot, 0.18*b)))
+		p.RRect(geom.Rc(full-0.5, mid-h/2-4, 1.5, h+8), 0.75, paint.Solid(faded(ink, 0.45*b)))
+	}
+	p.RRect(geom.Rc(x0, mid-h/2, min(kx, full)-x0, h), h/2, paint.Solid(accent))
+	if kx > full {
+		p.RRect(geom.Rc(full-h/2, mid-h/2, kx-full+h/2, h), h/2, paint.Solid(mix(accent, hot, 0.6)))
+	}
 	k := 5 + 3*v.hover.Value()
-	kx := x0 + (x1-x0)*vol
 	v.paintGain(p, x0, x1, mid, kx, h)
 	p.RRect(geom.Rc(kx-k, mid-k, 2*k, 2*k), k, paint.Solid(ink))
+}
+
+// full is how far along the bar full volume lies: at its end, or,
+// while loudness gain is on, three quarters along, the rest a stretch
+// past full.
+func (v *volumeBar) full() float32 { return 1 - 0.25*min(max(v.boost.Value(), 0), 1) }
+
+// along returns how far along the bar volume vol lies: in proportion up
+// to full, and past it in decibels.
+func (v *volumeBar) along(vol float32) float32 {
+	f := v.full()
+	if vol <= 1 || f > 0.999 {
+		return min(vol, 1) * f
+	}
+	return f + (1-f)*min(float32(dB(float64(vol)))/boostDB, 1)
+}
+
+// volumeAt returns the volume at u along the bar.
+func (v *volumeBar) volumeAt(u float32) float32 {
+	f := v.full()
+	if u <= f || f > 0.999 {
+		return u / f
+	}
+	return float32(math.Pow(10, float64((u-f)/(1-f)*boostDB)/20))
+}
+
+// level says how loud tracks play at the volume, as gain brings them
+// to targetLUFS: "plays at -14.0 LUFS".
+func (v *volumeBar) level() string {
+	if v.volume <= 0 {
+		return "muted"
+	}
+	return fmt.Sprintf("plays at %.1f LUFS", targetLUFS+dB(float64(v.volume)))
 }
 
 // showGain takes the gain of the track playing, and says what it is.
 func (v *volumeBar) showGain(s Player, t Track) {
 	v.gain, v.by = s.Gain, s.GainBy
+	v.boost.Animate(map[bool]float32{false: 0, true: 1}[s.GainMode != GainOff], anim.Spring{Response: 0.4, Damping: 0.85})
 	switch s.GainBy {
 	case GainByTrack:
 		v.words = [2]string{fmt.Sprintf("%+.1f dB track gain", s.Gain),
-			fmt.Sprintf("%.1f LUFS to %d", t.LUFS, targetLUFS)}
+			fmt.Sprintf("%.1f LUFS, %s", t.LUFS, v.level())}
 	case GainByAlbum:
 		v.words = [2]string{fmt.Sprintf("%+.1f dB album gain", s.Gain),
-			fmt.Sprintf("album %.1f LUFS to %d", s.AlbumLUFS, targetLUFS)}
+			fmt.Sprintf("album %.1f LUFS, %s", s.AlbumLUFS, v.level())}
 	case GainMeasuring:
 		v.words = [2]string{"Measuring loudness…", ""}
 	case GainNone:
@@ -893,13 +941,13 @@ func (v *volumeBar) paintGain(p *paint.Painter, x0, x1, mid, kx, h float32) {
 	if v.by == GainByTrack || v.by == GainByAlbum {
 		eff := v.shown.Value() * float32(math.Pow(10, float64(v.gain)/20))
 		// The stretch grows out of the knob as it shows.
-		ex := kx + (x0+(x1-x0)*min(eff, 1)-kx)*min(on, 1)
+		ex := kx + (x0+(x1-x0)*v.along(min(eff, maxBoost))-kx)*min(on, 1)
 		lo, hi := min(kx, ex), max(kx, ex)
 		p.RRect(geom.Rc(lo, mid-h/2-1, hi-lo, h+2), (h+2)/2, paint.Solid(faded(mix(accent, ink, 0.5), 0.55*on)))
 		r := float32(6)
 		p.RRectStroke(geom.Rc(ex-r, mid-r, 2*r, 2*r), r, paint.Solid(color.NRGBA{}), paint.Stroke{Width: 2, Color: faded(accent, on)})
-		if eff > 1 {
-			// Past full scale: a chevron past the bar's end.
+		if eff > maxBoost {
+			// Past the bar's end: a chevron past it.
 			for i := range 2 {
 				x := x1 + 6 + float32(i)*5
 				segment(p, geom.Pt(x, mid-4), geom.Pt(x+3, mid), 1.5, faded(accent, on))

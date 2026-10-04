@@ -41,6 +41,9 @@ var (
 	ink     = color.NRGBA{R: 0xf4, G: 0xf5, B: 0xfa, A: 0xff}
 	night   = color.NRGBA{R: 0x0b, G: 0x0c, B: 0x12, A: 0xff}
 	neutral = color.NRGBA{R: 0x9a, G: 0xa4, B: 0xc8, A: 0xff}
+	// hot marks the volume past full, where loud tracks reach the
+	// limiter.
+	hot = color.NRGBA{R: 0xff, G: 0x7a, B: 0x45, A: 0xff}
 )
 
 // faded is c at alpha a, from 0 to 1.
@@ -165,7 +168,10 @@ func newPlayerRoot(d *deck) *playerRoot {
 	r.lib = newLibrary(r)
 	r.listButton = newIconButton(icon.ListMusic, 40, func(u *gunim.UI) { r.openSheet(r.sheet.Target() < 0.5, u) })
 	r.eq = newEQPanel(r)
-	r.eqButton = newIconButton(icon.SlidersHorizontal, 40, func(u *gunim.UI) { r.eq.show(!r.eq.shown(), u) })
+	r.eqButton = newIconButton(icon.SlidersHorizontal, 40, func(u *gunim.UI) {
+		r.info.show(false, u)
+		r.eq.show(!r.eq.shown(), u)
+	})
 	r.info = newInfoCard(r)
 	r.infoButton = newIconButton(icon.Info, 40, func(u *gunim.UI) { r.info.show(!r.info.shown(), u) })
 	return r
@@ -248,7 +254,12 @@ func (r *playerRoot) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Child
 		// equalizer's, under it, at the window's right.
 		infoAt := btnAt.Sub(geom.Pt(48, 0))
 		kids.At(6).Layout(gunim.Tight(geom.Sz(40, 40)))
-		kids.At(6).Place(infoAt)
+		if r.eq.open.Value() > 0.01 {
+			// The equalizer has buttons of its own there.
+			kids.At(6).Place(geom.Pt(-10000, 0))
+		} else {
+			kids.At(6).Place(infoAt)
+		}
 		card := kids.At(7).Layout(gunim.Loose(geom.Sz(min(infoW, safe.Size().W-24), safe.Size().H)))
 		cardAt := geom.Pt(max(safe.Min.X+12, btnAt.X+40-card.W), btnAt.Y+52)
 		r.info.from = infoAt.Add(geom.Pt(20, 20)).Sub(cardAt)

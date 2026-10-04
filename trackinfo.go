@@ -203,6 +203,9 @@ func (c *infoCard) lines() (head [2]string, rows [][2]string) {
 		rows = append(rows, [2]string{"Album", fmt.Sprintf("%.1f LUFS", s.AlbumLUFS)})
 	}
 	rows = append(rows, [2]string{"Gain", gainText(s, t)})
+	if s.Headroom > 0.05 {
+		rows = append(rows, [2]string{"Headroom", fmt.Sprintf("%.1f dB lower, for the equalizer's boosts", s.Headroom)})
+	}
 	return head, rows
 }
 

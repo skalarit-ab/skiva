@@ -214,6 +214,9 @@ func (e *eqPanel) Paint(p *paint.Painter, _ gunim.Frame, box geom.Size, kids gun
 	if e.graph.bypass {
 		what += " · bypassed"
 	}
+	if h := e.root.state.Headroom; h > 0.05 && !e.graph.bypass {
+		what += fmt.Sprintf(" · %.1f dB lower, so its boosts stay unclipped", h)
+	}
 	shaped(what, 12, false).Paint(p, e.at.Add(geom.Pt(24, 44)), faded(ink, 0.5))
 	for k := range kids.All {
 		k.Paint(p)
