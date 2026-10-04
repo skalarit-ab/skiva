@@ -49,6 +49,7 @@ import (
 	"github.com/marrasen/gunim/audio/speaker"
 	"github.com/marrasen/gunim/driver"
 	"github.com/marrasen/gunim/geom"
+	"github.com/marrasen/gunim/widget"
 )
 
 func main() {
@@ -124,9 +125,14 @@ func run(at setup, play startAt, library bool, list string, eqOpen, infoOpen boo
 	}
 	err := gunim.Main(ctx, func(a *gunim.App) error {
 		// The player draws the whole window, its title bar over it, as
-		// it draws under a phone's status bar.
+		// it draws under a phone's status bar. The bar says Music; the
+		// window's title, which the taskbar and Alt+Tab show, names the
+		// track as well.
+		bar := widget.NewTitleBar("")
+		bar.Name, bar.TitleAtStart = appName, true
 		w, err := a.NewWindow(gunim.WindowOptions{
-			Title: "Music", Size: size, Place: place, Icons: icons(), AskToClose: CloseAsked{}, UnderTitleBar: true,
+			Title: appName, Size: size, Place: place, Icons: icons(), AskToClose: CloseAsked{},
+			TitleBar: bar, UnderTitleBar: true,
 		})
 		if err != nil {
 			return fmt.Errorf("music: %w", err)

@@ -104,3 +104,23 @@ func TestTheWindowOpensWhereItLastClosed(t *testing.T) {
 		t.Fatalf("the next run opens at %v, want %v still", got, at)
 	}
 }
+
+func TestTheWindowsTitleNamesTheTrack(t *testing.T) {
+	s := library4()
+	w, root, run := stage(t, geom.Sz(1100, 720), s)
+	if root.title != appName {
+		t.Fatalf("with no track, the window's title is %q, want %q", root.title, appName)
+	}
+	s.Current = 2
+	if err := w.Client().Publish(playerTopic, s); err != nil {
+		t.Fatal(err)
+	}
+	run(1)
+	tr := s.Tracks[1]
+	if want := tr.Title + " – " + tr.Artist + " – " + appName; root.title != want {
+		t.Fatalf("playing %q, the window's title is %q, want %q", tr.Title, root.title, want)
+	}
+	if got := windowTitle(Track{Title: "Untitled"}, true); got != "Untitled – "+appName {
+		t.Fatalf("a track without an artist gives the title %q", got)
+	}
+}

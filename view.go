@@ -149,6 +149,8 @@ type playerRoot struct {
 	eqButton *iconButton
 	// resumed is the last of the application's Resumed taken.
 	resumed int
+	// title is the window's title last set; see windowTitle.
+	title string
 	// info tells about the track playing, and infoButton opens it.
 	info       *infoCard
 	infoButton *iconButton
@@ -214,7 +216,27 @@ func (r *playerRoot) show(s Player, u *gunim.UI) {
 		r.lib.page.Jump(1)
 	}
 	r.eqButton.setLit(len(s.EQ.Bands) > 0 && !s.EQ.Bypass)
+	if title := windowTitle(t, ok); title != r.title {
+		r.title = title
+		u.SetTitle(title)
+	}
 	u.Invalidate()
+}
+
+// appName is the player's name, as its title bar shows it.
+const appName = "Music"
+
+// windowTitle is the window's title, which the taskbar and the window
+// switcher show: the track and its artist, then the player's name, or
+// the name alone with no track.
+func windowTitle(t Track, ok bool) string {
+	switch {
+	case !ok || t.Title == "":
+		return appName
+	case t.Artist == "":
+		return t.Title + " – " + appName
+	}
+	return t.Title + " – " + t.Artist + " – " + appName
 }
 
 func (r *playerRoot) openSheet(on bool, u *gunim.UI) {
