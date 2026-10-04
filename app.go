@@ -1217,9 +1217,8 @@ func (a *app) start(id int) {
 		a.z.want(e, true)
 	}
 	// The track starts at its own gain, worked out for the list it
-	// plays from.
-	a.gainFor(e, false)
-	a.voice = a.d.play(src, closer, false)
+	// plays from; the track before fades out at its own.
+	a.voice = a.d.play(src, closer, false, a.gainFor(e))
 	a.upNext = nil
 	// The list playing goes on from its track played last.
 	if slices.Contains(a.list(a.From), id) {
@@ -1279,8 +1278,7 @@ func (a *app) takeUp() {
 	if e.an == nil {
 		a.z.want(e, true)
 	}
-	a.gainFor(e, false)
-	a.voice = a.d.play(src, closer, true)
+	a.voice = a.d.play(src, closer, true, a.gainFor(e))
 	a.upNext = nil
 	if slices.Contains(a.list(a.From), e.ID) {
 		a.listAt = e.ID
@@ -1362,19 +1360,20 @@ func (a *app) albumLoudness(e *entry) (lufs float64, peak float32, ok bool) {
 
 // applyGain sets the gain the track playing plays at, gliding to it
 // where it plays already.
-func (a *app) applyGain(glide bool) { a.gainFor(a.entries[a.Current], glide) }
+func (a *app) applyGain(glide bool) { a.d.setGain(a.gainFor(a.entries[a.Current]), glide) }
 
-// gainFor sets the gain track e plays at, gliding to it where glide.
+// gainFor returns the gain track e plays at, in decibels, and shows it
+// as the gain of the track playing.
 //
 // The equalizer's boosts would lift the track's peaks with them: the
 // track plays lowered by as much of the boost as would take its peaks
 // past full scale, and no more, so a boost still lifts where there is
 // room, and never drives the limiter on its own. The volume past full
 // may still: that is the listener's to choose.
-func (a *app) gainFor(e *entry, glide bool) {
+func (a *app) gainFor(e *entry) float64 {
 	db, by, album, headroom := a.gainAll(e)
 	a.Gain, a.GainBy, a.AlbumLUFS, a.Headroom = float32(db), by, float32(album), float32(headroom)
-	a.d.setGain(db-headroom, glide)
+	return db - headroom
 }
 
 // gainAll returns e's loudness gain, what it follows and its album's
@@ -1461,7 +1460,7 @@ func (a *app) turned() {
 	if e.an == nil {
 		a.z.want(e, true)
 	}
-	a.gainFor(e, false)
+	a.d.setGain(a.gainFor(e), false)
 	a.prepareNext()
 }
 

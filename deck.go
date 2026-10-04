@@ -30,9 +30,6 @@ type deck struct {
 	an *audio.Analyzer
 	// eq is the equalizer every track plays through.
 	eq *audio.EQ
-	// gain is the loudness gain a track starts at, as a ratio, on top
-	// of the volume.
-	gain float32
 	// fading is done once the fade as the player closes has ended.
 	fading <-chan struct{}
 }
@@ -43,7 +40,7 @@ const bandCount = 36
 func newDeck(mix *audio.Mixer) *deck {
 	an := audio.NewAnalyzer(mix, bandCount)
 	an.Tilt = 4
-	return &deck{mix: mix, volume: 0.8, an: an, eq: audio.NewEQ(), gain: 1}
+	return &deck{mix: mix, volume: 0.8, an: an, eq: audio.NewEQ()}
 }
 
 // crossfade is how long a track playing fades out as another starts.
@@ -56,14 +53,14 @@ type track struct {
 	closer func()
 }
 
-// play starts src, at the loudness gain set last, fading out the track
-// playing. closer runs once the voice is done with src. It returns the
-// new voice.
-func (d *deck) play(src audio.Seeker, closer func(), paused bool) *audio.Voice {
+// play starts src, at its own loudness gain db, fading out the track
+// playing at the gain it had. closer runs once the voice is done with
+// src. It returns the new voice.
+func (d *deck) play(src audio.Seeker, closer func(), paused bool, db float64) *audio.Voice {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.retire()
-	d.cur = &track{src: newGained(src, d.gain), closer: closer}
+	d.cur = &track{src: newGained(src, ratio(db)), closer: closer}
 	// A volume of zero would play at 1, as Options takes it: a muted
 	// track starts as near silent as makes no odds.
 	d.voice = d.mix.Play(d.cur.src, audio.Options{Volume: max(d.volume, 1e-6), FadeIn: 30 * time.Millisecond,
@@ -111,7 +108,7 @@ func (d *deck) queue(src audio.Seeker, closer func(), db float64) {
 		d.voice.Then(nil)
 		return
 	}
-	d.next = &track{src: newGained(src, float32(math.Pow(10, db/20))), closer: closer}
+	d.next = &track{src: newGained(src, ratio(db)), closer: closer}
 	d.voice.Then(d.next.src)
 }
 
@@ -127,7 +124,6 @@ func (d *deck) turned() {
 		d.cur.closer()
 	}
 	d.cur, d.next = d.next, nil
-	d.gain = d.cur.src.target()
 }
 
 // stop ends the track playing, fading it out.
@@ -234,17 +230,20 @@ func (d *deck) spectrum(freqs, heard, before []float32) {
 	d.an.Spectrum(freqs, heard, before)
 }
 
-// setGain sets the loudness gain of the track playing, in decibels, and
-// of the next to start: gliding where glide, over most of a second, as
-// a gain set while a track plays should go unnoticed.
+// setGain sets the loudness gain of the track playing, in decibels:
+// gliding where glide, over most of a second, as a gain set while a
+// track plays should go unnoticed. A track fading out as another starts
+// keeps its own.
 func (d *deck) setGain(db float64, glide bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.gain = float32(math.Pow(10, db/20))
 	if d.cur != nil {
-		d.cur.src.set(d.gain, glide)
+		d.cur.src.set(ratio(db), glide)
 	}
 }
+
+// ratio is a gain in decibels as a ratio.
+func ratio(db float64) float32 { return float32(math.Pow(10, db/20)) }
 
 // gained plays a source at a gain of its own, which glides where it is
 // set to. Its methods are safe from any goroutine.

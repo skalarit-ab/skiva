@@ -61,7 +61,7 @@ func TestTheWindowOpensTheListTheTrackTakenUpPlaysFrom(t *testing.T) {
 func TestTheMusicFadesOutAsThePlayerCloses(t *testing.T) {
 	m := audio.NewMixer()
 	d := newDeck(m)
-	d.play(&songSilence{}, func() {}, false)
+	d.play(&songSilence{}, func() {}, false, 0)
 	d.fadeOut(100 * time.Millisecond)
 	go func() {
 		buf := make([]float32, 2*480)

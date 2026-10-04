@@ -256,3 +256,26 @@ func TestTheLibraryOpeningPutsTheCardAway(t *testing.T) {
 		t.Fatal("the track's card stayed open over the library")
 	}
 }
+
+// A track fading out as another starts keeps its own gain: the new
+// track's gain is the new track's alone.
+func TestATrackFadingOutKeepsItsOwnGain(t *testing.T) {
+	a := newApp(context.Background(), newDeck(audio.NewMixer()), "")
+	measured(a)
+	all := ids(a)
+	a.handle(SetGainMode{Mode: GainTrack})
+	a.handle(PlayTrack{ID: all[0]})
+	old := a.d.cur.src
+	before := old.target()
+	// The third track is 12 dB louder: it plays 12 dB lower
+	a.handle(PlayTrack{ID: all[2]})
+	if got := old.target(); got != before {
+		t.Fatalf("the track fading out went from a gain of %.3f to %.3f as the next started", before, got)
+	}
+	if got, want := a.d.cur.src.target(), ratio(float64(a.Gain-a.Headroom)); math.Abs(float64(got-want)) > 1e-4 {
+		t.Fatalf("the new track plays at a gain of %.3f, want %.3f", got, want)
+	}
+	if math.Abs(float64(a.d.cur.src.target()/before)-math.Pow(10, -12.0/20)) > 1e-3 {
+		t.Fatalf("the new track plays at %.3f of the first's gain, want 12 dB lower", a.d.cur.src.target()/before)
+	}
+}
