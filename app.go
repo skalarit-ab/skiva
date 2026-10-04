@@ -74,6 +74,10 @@ const (
 // playerTopic is what the player view watches.
 const playerTopic = "player"
 
+// keeper keeps the application running in the background while on, as
+// gunim.App.KeepRunning does.
+type keeper func(on bool, title, text string) error
+
 // app is the application half.
 type app struct {
 	Player
@@ -96,7 +100,7 @@ type peaksRead struct {
 }
 
 // serve keeps the player's state and hears what the window sends.
-func serve(ctx context.Context, c gunim.Client, d *deck, dir string, play startAt) error {
+func serve(ctx context.Context, c gunim.Client, d *deck, dir string, play startAt, keep keeper) error {
 	a := &app{
 		d: d, entries: map[int]*entry{},
 		rng:       rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 7)),
@@ -135,7 +139,26 @@ func serve(ctx context.Context, c gunim.Client, d *deck, dir string, play startA
 	if dir == "" {
 		startPlay()
 	}
-	publish := func() { _ = c.Publish(playerTopic, a.Player) }
+	// While a track plays, a phone keeps the player running in the
+	// background, saying what plays.
+	var kept string
+	publish := func() {
+		_ = c.Publish(playerTopic, a.Player)
+		now := ""
+		if e := a.entries[a.Current]; a.Playing && e != nil {
+			now = e.Title + "\x00" + e.Artist
+		}
+		if now == kept || keep == nil {
+			return
+		}
+		kept = now
+		if now == "" {
+			_ = keep(false, "", "")
+			return
+		}
+		e := a.entries[a.Current]
+		_ = keep(true, e.Title, e.Artist)
+	}
 	publish()
 	// Tracks found come in batches, so a big folder does not publish
 	// the library once for each.
