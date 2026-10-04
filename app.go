@@ -585,11 +585,12 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 				return c.Err()
 			}
 			if _, ok := ev.Intent.(CloseAsked); ok {
-				// The music fades out as the window does.
+				// The window shrinks a little and fades as it leaves, and
+				// the music fades out with it.
 				a.keepPlacement()
 				a.save()
 				a.d.fadeOut(closeFade)
-				c.Close()
+				c.Leave()
 				continue
 			}
 			a.handle(ev.Intent)
