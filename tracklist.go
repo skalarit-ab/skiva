@@ -21,8 +21,10 @@ type library struct {
 	scroll *widget.Scroll
 	count  int
 	busy   bool
-	// viewH is the height the list shows.
+	// viewH is the height the list shows, and at where the heading
+	// starts, clear of a phone's bars.
 	viewH float32
+	at    geom.Point
 }
 
 func newLibrary(r *playerRoot) *library {
@@ -44,12 +46,19 @@ const headH = 76
 func (l *library) Children() []gunim.Node { return []gunim.Node{l.scroll} }
 
 // Layout implements [gunim.Node].
-func (l *library) Layout(c gunim.Constraints, _ gunim.Frame, kids gunim.Children) geom.Size {
+func (l *library) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Children) geom.Size {
 	size := c.Max
+	// The glass runs under a phone's bars; the heading and the list keep
+	// clear of them: of the status bar only beside the track playing, as
+	// a sheet starts below it.
+	l.at = geom.Pt(f.Safe.Left, 0)
+	if !l.root.narrow {
+		l.at.Y = f.Safe.Top
+	}
 	k := kids.At(0)
-	l.viewH = max(size.H-headH, 0)
-	k.Layout(gunim.Tight(geom.Sz(size.W, l.viewH)))
-	k.Place(geom.Pt(0, headH))
+	l.viewH = max(size.H-l.at.Y-headH-f.Safe.Bottom, 0)
+	k.Layout(gunim.Tight(geom.Sz(size.W-l.at.X-f.Safe.Right, l.viewH)))
+	k.Place(geom.Pt(l.at.X, l.at.Y+headH))
 	return size
 }
 
@@ -73,12 +82,12 @@ func (l *library) Paint(p *paint.Painter, _ gunim.Frame, box geom.Size, kids gun
 	} else {
 		p.RRect(geom.Rc(box.W-1, 0, 1, box.H), 0, paint.Solid(faded(ink, 0.08)))
 	}
-	shaped("Library", 22, true).Paint(p, geom.Pt(24, 22), ink)
+	shaped("Library", 22, true).Paint(p, l.at.Add(geom.Pt(24, 22)), ink)
 	what := fmt.Sprintf("%d tracks", l.count)
 	if l.busy {
 		what += " · reading the folder…"
 	}
-	shaped(what, 12, false).Paint(p, geom.Pt(24, 50), faded(ink, 0.5))
+	shaped(what, 12, false).Paint(p, l.at.Add(geom.Pt(24, 50)), faded(ink, 0.5))
 	kids.At(0).Paint(p)
 }
 

@@ -205,26 +205,30 @@ func (r *playerRoot) Children() []gunim.Node {
 func (r *playerRoot) Focusable() bool { return true }
 
 // Layout implements [gunim.Node].
-func (r *playerRoot) Layout(c gunim.Constraints, _ gunim.Frame, kids gunim.Children) geom.Size {
+func (r *playerRoot) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Children) geom.Size {
 	size := c.Max
 	r.size = size
 	r.narrow = size.W < narrowWidth
 	bg, now, lib, btn := kids.At(0), kids.At(1), kids.At(2), kids.At(3)
+	// The background, and the library's glass, run under a phone's
+	// bars; the track playing and the buttons keep clear of them.
 	bg.Layout(gunim.Tight(size))
 	bg.Place(geom.Point{})
+	area := geom.Rect{Max: size.Point()}.Inset(f.Safe)
 	if r.narrow {
-		now.Layout(gunim.Tight(size))
-		now.Place(geom.Point{})
+		now.Layout(gunim.Tight(area.Size()))
+		now.Place(area.Min)
 		h := size.H * 0.86
 		lib.Layout(gunim.Tight(geom.Sz(size.W, h)))
 		lib.Place(geom.Pt(0, size.H-h*r.sheet.Value()))
 		btn.Layout(gunim.Tight(geom.Sz(40, 40)))
-		btn.Place(geom.Pt(size.W-56, 16))
+		btn.Place(geom.Pt(area.Max.X-56, area.Min.Y+16))
 	} else {
-		lib.Layout(gunim.Tight(geom.Sz(sideWidth, size.H)))
+		libW := sideWidth + f.Safe.Left
+		lib.Layout(gunim.Tight(geom.Sz(libW, size.H)))
 		lib.Place(geom.Point{})
-		now.Layout(gunim.Tight(geom.Sz(size.W-sideWidth, size.H)))
-		now.Place(geom.Pt(sideWidth, 0))
+		now.Layout(gunim.Tight(geom.Sz(area.Max.X-libW, area.Size().H)))
+		now.Place(geom.Pt(libW, area.Min.Y))
 		btn.Layout(gunim.Tight(geom.Size{}))
 		btn.Place(geom.Pt(-100, -100))
 	}
