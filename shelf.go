@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"image/color"
 	"path/filepath"
 	"time"
 
@@ -19,6 +20,7 @@ type shelfKind int
 
 const (
 	shelfAll shelfKind = iota
+	shelfQueue
 	shelfCaption
 	shelfPlaylist
 	shelfNewPlaylist
@@ -63,13 +65,21 @@ type shelf struct {
 	ys, in, lit map[string]*anim.Float
 	hot, down   string
 	size        geom.Size
+	// target is the row a drag would drop on, lit by aim, and goal
+	// what a drop there does.
+	target string
+	aim    *anim.Float
+	goal   string
 	// shown says the shelf has been shown once, so the rows of the
 	// first showing stand in place.
 	shown bool
 }
 
 func newShelf(l *library) *shelf {
-	return &shelf{lib: l, ys: map[string]*anim.Float{}, in: map[string]*anim.Float{}, lit: map[string]*anim.Float{}}
+	s := &shelf{lib: l, ys: map[string]*anim.Float{}, in: map[string]*anim.Float{}, lit: map[string]*anim.Float{},
+		aim: anim.NewFloat(0)}
+	s.Add(s.aim)
+	return s
 }
 
 // covers returns up to four covers of ids, each a different one.
@@ -90,6 +100,14 @@ func covers(ids []int, byID map[int]Track) []*paint.Image {
 	return out
 }
 
+// queued says how many tracks are on Up next.
+func queued(n int) string {
+	if n == 0 {
+		return "Drop tracks here to play them next"
+	}
+	return count(n)
+}
+
 func count(n int) string {
 	if n == 1 {
 		return "1 track"
@@ -99,10 +117,12 @@ func count(n int) string {
 
 func (s *shelf) show(st Player, u *gunim.UI) {
 	byID := s.lib.byID
-	rows := make([]shelfRow, 0, len(st.Playlists)+len(st.Folders)+6)
+	rows := make([]shelfRow, 0, len(st.Playlists)+len(st.Folders)+7)
 	rows = append(rows,
 		shelfRow{kind: shelfAll, key: "all", title: "All tracks", sub: count(len(st.Library)),
 			icon: icon.Library, covers: covers(st.Library, byID), list: AllTracks},
+		shelfRow{kind: shelfQueue, key: "queue", title: "Up next", sub: queued(len(st.Queue)),
+			icon: icon.ListStart, covers: covers(st.Queue, byID), list: QueueList},
 		shelfRow{kind: shelfCaption, key: "cap:p", title: "Playlists"})
 	for _, p := range st.Playlists {
 		rows = append(rows, shelfRow{kind: shelfPlaylist, key: "p:" + p.ID, title: p.Name, sub: count(len(p.Tracks)),
@@ -213,6 +233,33 @@ func (s *shelf) Handle(e input.Event, u *gunim.UI) bool {
 			s.press(r, u)
 		}
 		s.down = ""
+	case input.DragOver:
+		files, tracks, ok := dropped(e.Data)
+		if !ok {
+			return false
+		}
+		r, _ := s.rowAt(e.Pos)
+		key, goal := s.dropOn(r, files, tracks)
+		if key == "" {
+			s.unaim()
+			return false
+		}
+		s.aimAt(key, goal)
+		u.AnswerDrag(hint(goal))
+	case input.DragLeave:
+		s.unaim()
+	case input.Drop:
+		files, tracks, ok := dropped(e.Data)
+		s.unaim()
+		if !ok {
+			return false
+		}
+		r, _ := s.rowAt(e.Pos)
+		if key, _ := s.dropOn(r, files, tracks); key == "" {
+			return false
+		}
+		u.Cue(gunim.CueSelect, s)
+		s.land(r, files, tracks, u)
 	default:
 		return false
 	}
@@ -220,10 +267,64 @@ func (s *shelf) Handle(e input.Event, u *gunim.UI) bool {
 	return true
 }
 
+// dropOn returns the row a drag of files or tracks over r drops on,
+// and what a drop does there; no row for a drop it refuses. Files over
+// any row but a playlist's or Up next join the library.
+func (s *shelf) dropOn(r shelfRow, files []string, tracks []int) (key, goal string) {
+	it := what(files, tracks)
+	switch r.kind {
+	case shelfQueue:
+		return r.key, "Play " + it + " next"
+	case shelfPlaylist:
+		return r.key, "Add " + it + " to " + r.title
+	case shelfNewPlaylist:
+		return r.key, "Make a playlist of " + it
+	case shelfAll, shelfCaption, shelfFolder, shelfAddFolder, shelfAddFiles:
+	}
+	if tracks != nil {
+		return "", ""
+	}
+	return "all", "Add " + it + " to the library"
+}
+
+// land drops files or tracks on row r.
+func (s *shelf) land(r shelfRow, files []string, tracks []int, u *gunim.UI) {
+	switch r.kind {
+	case shelfQueue:
+		if tracks != nil {
+			u.Send(s, Enqueue{Tracks: tracks})
+		} else {
+			u.Send(s, AddPaths{Paths: files, To: QueueList, At: -1})
+		}
+	case shelfPlaylist:
+		if tracks != nil {
+			u.Send(s, AddToPlaylist{ID: r.pid, Tracks: tracks})
+		} else {
+			u.Send(s, AddPaths{Paths: files, To: r.list, At: -1})
+		}
+	case shelfNewPlaylist:
+		s.lib.newPlaylistOf(tracks, files, u)
+	case shelfAll, shelfCaption, shelfFolder, shelfAddFolder, shelfAddFiles:
+		u.Send(s, AddPaths{Paths: files, To: AllTracks, At: -1})
+	}
+}
+
+// aimAt lights row key for a drag over it.
+func (s *shelf) aimAt(key, goal string) {
+	if key != s.target || s.aim.Target() < 0.5 {
+		s.aim.Jump(0)
+	}
+	s.target, s.goal = key, goal
+	s.aim.Animate(1, anim.Spring{Response: 0.3, Damping: 0.6})
+}
+
+// unaim puts the light of a drag out.
+func (s *shelf) unaim() { s.aim.Animate(0, anim.Gentle) }
+
 // press does what row r is for.
 func (s *shelf) press(r shelfRow, u *gunim.UI) {
 	switch r.kind {
-	case shelfAll, shelfPlaylist, shelfFolder:
+	case shelfAll, shelfQueue, shelfPlaylist, shelfFolder:
 		s.lib.openList(r.list, u)
 	case shelfNewPlaylist:
 		s.lib.newPlaylist(nil, u)
@@ -257,6 +358,9 @@ func (s *shelf) prepare(at geom.Point, u *gunim.UI) bool {
 	l := s.lib
 	var items menuItems
 	switch r.kind {
+	case shelfQueue:
+		items.add("Play", icon.Play, func(u *gunim.UI) { l.playList(QueueList, u) })
+		items.add("Clear Up next", icon.X, func(u *gunim.UI) { u.Send(s, ClearQueue{}) })
 	case shelfAll:
 		items.add("Play", icon.Play, func(u *gunim.UI) { l.playList(AllTracks, u) })
 		items.line()
@@ -317,16 +421,33 @@ func (s *shelf) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, _ gunim.Ch
 		if l := s.lib; l.page.Value() > 0.001 && r.list == l.open && r.kind != shelfNewPlaylist {
 			p.RRect(row, 12, paint.Solid(faded(ink, 0.05*grow)))
 		}
+		aimed := float32(0)
+		if r.key == s.target {
+			aimed = s.aim.Value()
+		}
+		if aimed > 0.005 {
+			// The row a drag would drop on swells, ringed in the
+			// track's colour, and says what a drop does.
+			accent := s.lib.root.bg.accent.Value()
+			lift := p.Push(paint.Scale(1+0.04*aimed, mid))
+			p.RRect(row, 12, paint.Solid(faded(accent, 0.18*min(aimed, 1))))
+			p.RRectStroke(row, 12, paint.Solid(color.NRGBA{}), paint.Stroke{Width: 1.5, Color: faded(accent, min(aimed, 1))})
+			lift()
+		}
 		tile := geom.Rc(row.Min.X+8, y+(rowH-44)/2, 44, 44)
 		s.paintTile(p, f, r, tile, grow)
 		textX := tile.Max.X + 12
 		room := row.Max.X - 12 - textX
 		title := faded(ink, 0.92*grow)
-		if r.sub == "" {
+		sub := r.sub
+		if aimed > 0.5 {
+			sub = s.goal
+		}
+		if sub == "" {
 			paintFit(p, r.title, 15, true, geom.Pt(textX, y+21), room, title)
 		} else {
 			paintFit(p, r.title, 15, true, geom.Pt(textX, y+12), room, title)
-			paintFit(p, r.sub, 12, false, geom.Pt(textX, y+33), room, faded(ink, 0.5*grow))
+			paintFit(p, sub, 12, false, geom.Pt(textX, y+33), room, faded(ink, 0.5*grow))
 		}
 		end()
 	}

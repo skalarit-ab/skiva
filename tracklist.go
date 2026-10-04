@@ -72,6 +72,9 @@ func newLibrary(r *playerRoot) *library {
 	l.listMenu.Picked = l.pick
 	l.listScroll = widget.NewScroll(l.listMenu)
 	l.back = newIconButton(icon.ChevronLeft, 36, func(u *gunim.UI) { l.close(u) })
+	// A drag resting on the back button slides the list away, to drop
+	// on the shelf.
+	l.back.dwell = func(u *gunim.UI) { l.close(u) }
 	l.more = newIconButton(icon.Ellipsis, 36, func(u *gunim.UI) { l.openMore(u) })
 	l.menu = widget.NewContextMenu(l.more)
 	l.menu.Picked = l.pick
@@ -120,6 +123,8 @@ func (l *library) show(s Player, u *gunim.UI) {
 func (l *library) has(id ListID) bool {
 	s := string(id)
 	switch {
+	case id == QueueList:
+		return true
 	case strings.HasPrefix(s, "p:"):
 		return s[2:] == l.pending || l.findPlaylist(s[2:]) != nil
 	case strings.HasPrefix(s, "f:"):
@@ -141,6 +146,8 @@ func (l *library) findPlaylist(id string) *Playlist {
 func (l *library) listOf(id ListID) (title string, ids []int) {
 	s := string(id)
 	switch {
+	case id == QueueList:
+		return "Up next", l.state.Queue
 	case strings.HasPrefix(s, "p:"):
 		if p := l.findPlaylist(s[2:]); p != nil {
 			return p.Name, p.Tracks
@@ -186,12 +193,7 @@ func (l *library) close(u *gunim.UI) {
 // asks for its name.
 func (l *library) newPlaylist(ids []int, u *gunim.UI) {
 	id := fmt.Sprintf("%x", time.Now().UnixNano())
-	n := len(l.state.Playlists) + 1
-	name := fmt.Sprintf("Playlist %d", n)
-	for slices.ContainsFunc(l.state.Playlists, func(p Playlist) bool { return p.Name == name }) {
-		n++
-		name = fmt.Sprintf("Playlist %d", n)
-	}
+	name := l.freeName()
 	l.pending = id
 	u.Send(l.root, NewPlaylist{ID: id, Name: name, Tracks: ids})
 	if len(ids) > 0 {
@@ -199,6 +201,29 @@ func (l *library) newPlaylist(ids []int, u *gunim.UI) {
 	}
 	l.openList(PlaylistList(id), u)
 	l.startNaming(name, u)
+}
+
+// newPlaylistOf makes a playlist of tracks or files dropped on the
+// shelf's New playlist, named for the folder dropped where one was.
+func (l *library) newPlaylistOf(tracks []int, files []string, u *gunim.UI) {
+	id := fmt.Sprintf("%x", time.Now().UnixNano())
+	name := l.freeName()
+	if len(files) == 1 {
+		name = strings.TrimSuffix(filepath.Base(files[0]), filepath.Ext(files[0]))
+	}
+	l.pending = id
+	u.Send(l.root, NewPlaylist{ID: id, Name: name, Tracks: tracks, Paths: files})
+}
+
+// freeName returns a name for a new playlist that no other has.
+func (l *library) freeName() string {
+	n := len(l.state.Playlists) + 1
+	name := fmt.Sprintf("Playlist %d", n)
+	for slices.ContainsFunc(l.state.Playlists, func(p Playlist) bool { return p.Name == name }) {
+		n++
+		name = fmt.Sprintf("Playlist %d", n)
+	}
+	return name
 }
 
 // startNaming puts a field in place of the open playlist's title.
@@ -223,11 +248,45 @@ func (l *library) endNaming(keep bool, u *gunim.UI) {
 	u.Invalidate()
 }
 
+// Handle implements [gunim.Handler]: files dragged over the library's
+// heading, or the shelf's gaps, join the library.
+func (l *library) Handle(e input.Event, u *gunim.UI) bool {
+	if l.page.Target() > 0.5 {
+		return false
+	}
+	switch e := e.(type) {
+	case input.DragOver:
+		files, tracks, ok := dropped(e.Data)
+		if !ok || tracks != nil {
+			return false
+		}
+		_, goal := l.shelf.dropOn(shelfRow{}, files, nil)
+		l.shelf.aimAt("all", goal)
+		u.AnswerDrag(hint(goal))
+	case input.DragLeave:
+		l.shelf.unaim()
+	case input.Drop:
+		files, tracks, ok := dropped(e.Data)
+		l.shelf.unaim()
+		if !ok || tracks != nil {
+			return false
+		}
+		u.Cue(gunim.CueSelect, l)
+		u.Send(l.root, AddPaths{Paths: files, To: AllTracks, At: -1})
+	default:
+		return false
+	}
+	u.Invalidate()
+	return true
+}
+
 // openMore opens the open list's menu under its button.
 func (l *library) openMore(u *gunim.UI) {
 	var items menuItems
 	s := string(l.open)
 	switch {
+	case l.open == QueueList:
+		items.add("Clear Up next", icon.X, func(u *gunim.UI) { u.Send(l.root, ClearQueue{}) })
 	case strings.HasPrefix(s, "p:"):
 		id := s[2:]
 		items.add("Add files…", icon.FilePlus, func(u *gunim.UI) { u.Send(l.root, AddFiles{Playlist: id}) })
@@ -453,14 +512,27 @@ type trackList struct {
 	to      int
 	shift   map[int]*anim.Float
 	size    geom.Size
+	// press is where the button went down on a row, to start dragging
+	// its track from, and dragging says it is away.
+	press    geom.Point
+	dragging bool
+	// gap is where files dragged over the list would land, gliding
+	// from place to place, lit by aim; at is its place.
+	gap, aim *anim.Float
+	at       int
 }
 
 func newTrackList(r *playerRoot) *trackList {
-	return &trackList{root: r, hot: -1, down: -1, moving: -1, lit: map[int]*anim.Float{}, shift: map[int]*anim.Float{}}
+	t := &trackList{root: r, hot: -1, down: -1, moving: -1, lit: map[int]*anim.Float{}, shift: map[int]*anim.Float{},
+		gap: anim.NewFloat(0), aim: anim.NewFloat(0)}
+	t.Add(t.gap, t.aim)
+	return t
 }
 
 // editable says whether the list is a playlist, whose rows move.
-func (t *trackList) editable() bool { return strings.HasPrefix(string(t.list), "p:") }
+func (t *trackList) editable() bool {
+	return t.list == QueueList || strings.HasPrefix(string(t.list), "p:")
+}
 
 func (t *trackList) show(ids []int, byID map[int]Track, list ListID, cur int, u *gunim.UI) {
 	if list != t.list {
@@ -540,6 +612,15 @@ func (t *trackList) Handle(e input.Event, u *gunim.UI) bool {
 			return false
 		}
 		t.hover(t.rowAt(e.Pos))
+		// A row pressed and pulled away carries its track off, to drop
+		// on Up next, the track playing, or a playlist.
+		if d := e.Pos.Sub(t.press); t.down >= 0 && !t.dragging && d.X*d.X+d.Y*d.Y > 36 {
+			tr := t.tracks[t.down]
+			grab := geom.Pt(30, cardSize.H/2)
+			ghost := widget.NewDragGhost(&trackCard{tr: tr}, grab)
+			u.StartDrag(t, trackDrag{IDs: []int{tr.ID}, From: t.list}, ghost, grab)
+			t.dragging, t.down = true, -1
+		}
 	case input.PointerLeave:
 		t.hover(-1)
 	case input.PointerDown:
@@ -547,6 +628,7 @@ func (t *trackList) Handle(e input.Event, u *gunim.UI) bool {
 			return false
 		}
 		t.down = t.rowAt(e.Pos)
+		t.press = e.Pos
 		if t.onGrip(e.Pos) {
 			t.moving, t.to = t.down, t.down
 			t.grab = e.Pos.Y - float32(t.down)*rowH
@@ -567,11 +649,90 @@ func (t *trackList) Handle(e input.Event, u *gunim.UI) bool {
 			}
 		}
 		t.down = -1
+	case input.DragEnd:
+		t.dragging, t.down = false, -1
+	case input.DragOver:
+		files, tracks, ok := dropped(e.Data)
+		if !ok || tracks != nil && t.fromHere(e.Data) {
+			return false
+		}
+		goal, ok := t.dropGoal(files, tracks)
+		if !ok {
+			return false
+		}
+		t.aimAt(e.Pos.Y)
+		u.AnswerDrag(hint(goal))
+	case input.DragLeave:
+		t.aim.Animate(0, anim.Gentle)
+	case input.Drop:
+		files, tracks, ok := dropped(e.Data)
+		t.aim.Animate(0, anim.Gentle)
+		if !ok || tracks != nil && t.fromHere(e.Data) {
+			return false
+		}
+		if _, ok := t.dropGoal(files, tracks); !ok {
+			return false
+		}
+		u.Cue(gunim.CueSelect, t)
+		t.land(files, tracks, u)
 	default:
 		return false
 	}
 	u.Invalidate()
 	return true
+}
+
+// fromHere says whether a drag of tracks came from this list, whose
+// rows move by their grips instead.
+func (t *trackList) fromHere(data any) bool {
+	d, ok := data.(trackDrag)
+	return ok && d.From == t.list
+}
+
+// dropGoal says what a drop of files or tracks on the list does, and
+// false where it takes none: a playlist and Up next take both, at the
+// gap; the library and its folders take files.
+func (t *trackList) dropGoal(files []string, tracks []int) (string, bool) {
+	it := what(files, tracks)
+	title, _ := t.root.lib.listOf(t.list)
+	switch {
+	case t.list == QueueList:
+		return "Play " + it + " next", true
+	case t.editable():
+		return "Add " + it + " to " + title, true
+	case tracks == nil:
+		return "Add " + it + " to the library", true
+	}
+	return "", false
+}
+
+// aimAt moves the gap to the place nearest y, between two rows.
+func (t *trackList) aimAt(y float32) {
+	at := int((y + rowH/2) / rowH)
+	at = max(0, min(at, len(t.tracks)))
+	to := float32(at) * rowH
+	if t.aim.Target() < 0.5 {
+		t.gap.Jump(to)
+	} else {
+		t.gap.Animate(to, anim.Spring{Response: 0.2, Damping: 0.9})
+	}
+	t.at = at
+	t.aim.Animate(1, anim.Snappy)
+}
+
+// land puts files or tracks dropped on the list where the gap is.
+func (t *trackList) land(files []string, tracks []int, u *gunim.UI) {
+	s := string(t.list)
+	switch {
+	case tracks != nil && t.list == QueueList:
+		u.Send(t, Enqueue{Tracks: tracks})
+	case tracks != nil && strings.HasPrefix(s, "p:"):
+		u.Send(t, AddToPlaylist{ID: s[2:], Tracks: tracks})
+	case t.editable():
+		u.Send(t, AddPaths{Paths: files, To: t.list, At: t.at})
+	default:
+		u.Send(t, AddPaths{Paths: files, To: AllTracks, At: -1})
+	}
 }
 
 // drag moves the row moving to y, and the rows it passes make way.
@@ -621,6 +782,8 @@ func (t *trackList) drop(u *gunim.UI) {
 	u.Cue(gunim.CueTick, t)
 	if s := string(t.list); strings.HasPrefix(s, "p:") {
 		u.Send(t, MoveInPlaylist{ID: s[2:], From: from, To: to})
+	} else if t.list == QueueList {
+		u.Send(t, MoveInQueue{From: from, To: to})
 	}
 }
 
@@ -648,6 +811,10 @@ func (t *trackList) prepare(at geom.Point, u *gunim.UI) bool {
 	id := t.tracks[i].ID
 	var items menuItems
 	items.add("Play", icon.Play, func(u *gunim.UI) { u.Send(t, PlayTrack{ID: id, From: t.list}) })
+	if t.list != QueueList {
+		items.add("Play next", icon.ListStart, func(u *gunim.UI) { u.Send(t, Enqueue{Tracks: []int{id}, Next: true}) })
+		items.add("Add to Up next", icon.ListEnd, func(u *gunim.UI) { u.Send(t, Enqueue{Tracks: []int{id}}) })
+	}
 	items.line()
 	items.caption("Add to playlist")
 	for _, p := range l.state.Playlists {
@@ -660,20 +827,26 @@ func (t *trackList) prepare(at geom.Point, u *gunim.UI) bool {
 		items.add("Remove from this playlist", icon.X, func(u *gunim.UI) {
 			u.Send(t, RemoveFromPlaylist{ID: s[2:], At: i})
 		})
+	} else if t.list == QueueList {
+		items.line()
+		items.add("Remove from Up next", icon.X, func(u *gunim.UI) { u.Send(t, Unqueue{At: i}) })
 	}
 	items.set(l.listMenu)
 	l.picks = items.do
 	return true
 }
 
-// Layout implements [gunim.Node]: as tall as its rows.
+// Layout implements [gunim.Node]: as tall as its rows, and at least as
+// tall as the list's view, so a drag anywhere on it is the list's.
 func (t *trackList) Layout(c gunim.Constraints, _ gunim.Frame, _ gunim.Children) geom.Size {
-	t.size = c.Constrain(geom.Sz(c.Max.W, float32(len(t.tracks))*rowH+16))
+	h := max(float32(len(t.tracks))*rowH+16, t.root.lib.viewH)
+	t.size = c.Constrain(geom.Sz(c.Max.W, h))
 	return t.size
 }
 
 // Paint implements [gunim.Node].
 func (t *trackList) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, _ gunim.Children) {
+	defer t.paintAim(p, box)
 	if len(t.tracks) == 0 {
 		msg := "Tracks added show up here"
 		if t.editable() {
@@ -700,6 +873,28 @@ func (t *trackList) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, _ guni
 	if t.moving >= 0 {
 		t.paintRow(p, f, t.moving, t.y-t.grab, box, true)
 	}
+}
+
+// paintAim draws where a drag over the list would land: a line in the
+// gap between two rows, or, on a list that takes files into the
+// library, a frame round the list in view.
+func (t *trackList) paintAim(p *paint.Painter, box geom.Size) {
+	v := t.aim.Value()
+	if v < 0.005 {
+		return
+	}
+	accent := t.root.bg.accent.Value()
+	if !t.editable() {
+		top := t.root.lib.listScroll.Offset()
+		frame := geom.Rc(6, top+4, box.W-12, t.root.lib.viewH-8)
+		p.RRect(frame, 14, paint.Solid(faded(accent, 0.1*v)))
+		p.RRectStroke(frame, 14, paint.Solid(color.NRGBA{}), paint.Stroke{Width: 1.5, Color: faded(accent, v)})
+		return
+	}
+	y := t.gap.Value()
+	w := (box.W - 40) * (0.4 + 0.6*min(v, 1))
+	p.RRect(geom.Rc(20, y-1.5, w, 3), 1.5, paint.Solid(faded(accent, v)))
+	p.RRect(geom.Rc(14, y-5, 10, 10), 5, paint.Solid(faded(accent, v)))
 }
 
 // paintRow draws row i at y, lifted as it is moved.

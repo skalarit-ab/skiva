@@ -348,12 +348,12 @@ func TestARowsMenuAddsItsTrackToAPlaylistOrTakesItOff(t *testing.T) {
 		l.pick(slices.Index(items, "Mix"), u)
 		l.pick(slices.Index(items, "Remove from this playlist"), u)
 	})
-	want := []string{"Play", "Add to playlist", "Mix", "New playlist", "Remove from this playlist"}
+	want := []string{"Play", "Play next", "Add to Up next", "Add to playlist", "Mix", "New playlist", "Remove from this playlist"}
 	if !slices.Equal(items, want) {
 		t.Fatalf("the menu holds %q, want %q", items, want)
 	}
-	if !slices.Equal(l.listMenu.Captions, []int{1}) {
-		t.Fatalf("captions %v, want the second item", l.listMenu.Captions)
+	if !slices.Equal(l.listMenu.Captions, []int{3}) {
+		t.Fatalf("captions %v, want Add to playlist's", l.listMenu.Captions)
 	}
 	got := intents(w)
 	if len(got) != 2 {

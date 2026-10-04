@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"image/color"
+	"io/fs"
 	"log"
 	"math/rand/v2"
 	"os"
@@ -30,6 +31,9 @@ type (
 		// the library follows, each with its tracks.
 		Playlists []Playlist
 		Folders   []Folder
+		// Queue is the tracks to play next, in order, before the list
+		// playing goes on.
+		Queue []int
 		// Current is the ID of the track playing or paused, zero for
 		// none; Starts counts tracks started, so the window can tell a
 		// track begun again from one carrying on. From is the list it
@@ -108,11 +112,13 @@ type (
 	// AddFiles asks, with the system's dialog, for files to add to a
 	// playlist, or to the library where Playlist is empty.
 	AddFiles struct{ Playlist string }
-	// NewPlaylist makes a playlist, with tracks or none. The window
-	// picks its ID, so it can open the playlist at once.
+	// NewPlaylist makes a playlist, with tracks or none, and files, as
+	// dropped on it. The window picks its ID, so it can open the
+	// playlist at once.
 	NewPlaylist struct {
 		ID, Name string
 		Tracks   []int
+		Paths    []string
 	}
 	// RenamePlaylist renames a playlist.
 	RenamePlaylist struct{ ID, Name string }
@@ -134,6 +140,30 @@ type (
 		ID       string
 		From, To int
 	}
+
+	// AddPaths adds files from another program, as dropped on the
+	// window, to a list: to a playlist or Up next at a place, At, or
+	// at its end where At is -1, or to the library. A folder's tracks
+	// join a playlist or Up next, and a folder dropped on the library
+	// is followed. Play starts Up next if nothing plays.
+	AddPaths struct {
+		Paths []string
+		To    ListID
+		At    int
+		Play  bool
+	}
+	// Enqueue puts tracks on Up next: at its end, or first with Next.
+	// Play starts them if nothing plays.
+	Enqueue struct {
+		Tracks     []int
+		Next, Play bool
+	}
+	// Unqueue takes the track at a place off Up next.
+	Unqueue struct{ At int }
+	// MoveInQueue moves the track at From on Up next to To.
+	MoveInQueue struct{ From, To int }
+	// ClearQueue empties Up next.
+	ClearQueue struct{}
 )
 
 // The settings of Repeat.
@@ -143,8 +173,12 @@ const (
 	RepeatOne
 )
 
-// AllTracks is the whole library, as a list to play from.
-const AllTracks ListID = ""
+// AllTracks is the whole library, as a list to play from, and
+// QueueList the tracks to play next.
+const (
+	AllTracks ListID = ""
+	QueueList ListID = "q"
+)
 
 // PlaylistList and FolderList name a playlist's and a folder's lists.
 func PlaylistList(id string) ListID { return ListID("p:" + id) }
@@ -175,7 +209,18 @@ type app struct {
 	voice *audio.Voice
 	// history is the tracks played, for Back in shuffle.
 	history []int
-	rng     *rand.Rand
+	// queue holds Up next, by the tracks' keys, so files dropped there
+	// find their place before they are read. listAt is the track of
+	// the list playing that played last, which the list goes on from
+	// once Up next is done, and playSoon says Up next starts as soon
+	// as its first track is read.
+	queue    []string
+	listAt   int
+	playSoon bool
+	// spread carries files with the folders among them opened, for
+	// files dropped on a list.
+	spread chan spread
+	rng    *rand.Rand
 	// seeks counts the seeks, for the media controls to hear of each.
 	seeks int
 	// peaksDone carries peaks read in the background.
@@ -203,6 +248,15 @@ type app struct {
 type peaksRead struct {
 	id    int
 	peaks []float32
+}
+
+// spread is files dropped on a list, with the folders among them
+// opened, for place to put on the list.
+type spread struct {
+	paths []string
+	to    ListID
+	at    int
+	play  bool
 }
 
 // chosen is what the system's dialog gave, for a playlist or for the
@@ -233,6 +287,7 @@ func newApp(ctx context.Context, d *deck, file string) *app {
 		following: map[string]context.CancelFunc{},
 		reading:   map[string]bool{},
 		chosen:    make(chan chosen, 1),
+		spread:    make(chan spread, 4),
 	}
 	a.Volume = d.volume
 	for _, e := range demoEntries() {
@@ -344,12 +399,15 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 		case <-batch:
 			batch = nil
 			a.refresh()
+			a.startSoon()
 		case <-keep:
 			keep = nil
 			a.save()
 			continue
 		case got := <-a.chosen:
 			a.addPaths(got.paths, got.playlist)
+		case x := <-a.spread:
+			a.place(x)
 		case p := <-a.peaksDone:
 			if e := a.entries[p.id]; e != nil {
 				e.Peaks = p.peaks
@@ -427,7 +485,7 @@ func (a *app) apply(ch change) {
 // wanted says whether the library keeps e: it lies in a folder
 // followed, or was added on its own, or is on a playlist.
 func (a *app) wanted(e *entry) bool {
-	if len(e.roots) > 0 || e.song != nil || slices.Contains(a.kept.Files, e.key) {
+	if len(e.roots) > 0 || e.song != nil || slices.Contains(a.kept.Files, e.key) || slices.Contains(a.queue, e.key) {
 		return true
 	}
 	for _, p := range a.kept.Playlists {
@@ -471,6 +529,12 @@ func (a *app) refresh() {
 		}
 		a.Playlists = append(a.Playlists, pl)
 	}
+	a.Queue = a.Queue[:0:0]
+	for _, k := range a.queue {
+		if e := a.byKey[k]; e != nil {
+			a.Queue = append(a.Queue, e.ID)
+		}
+	}
 	a.Folders = a.Folders[:0:0]
 	for _, path := range a.kept.Folders {
 		f := Folder{Path: path, Tracks: []int{}, Reading: a.reading[path]}
@@ -488,6 +552,8 @@ func (a *app) refresh() {
 func (a *app) list(from ListID) []int {
 	s := string(from)
 	switch {
+	case from == QueueList:
+		return a.Queue
 	case strings.HasPrefix(s, "p:"):
 		for _, p := range a.Playlists {
 			if p.ID == s[2:] {
@@ -664,11 +730,11 @@ func (a *app) keys(ids []int) []string {
 	return out
 }
 
-// placeOf returns where on p the track at place at of the playlist the
-// window sees lies, counting the tracks it cannot find, or -1.
-func (a *app) placeOf(p *savedList, at int) int {
+// placeOf returns where in keys the track at place at of the list the
+// window sees lies, counting the tracks not read yet, or -1.
+func (a *app) placeOf(keys []string, at int) int {
 	n := 0
-	for i, k := range p.Paths {
+	for i, k := range keys {
 		if a.byKey[k] == nil {
 			continue
 		}
@@ -704,10 +770,68 @@ func (a *app) ask(o driver.ChooseOptions, playlist string) {
 func (a *app) handle(in gunim.Intent) {
 	switch in := in.(type) {
 	case PlayTrack:
-		a.From = in.From
+		if in.From != QueueList {
+			a.From = in.From
+			a.start(in.ID)
+			break
+		}
+		// A track picked on Up next plays, and those before it are
+		// passed by; the list playing goes on after.
+		if i := slices.Index(a.Queue, in.ID); i >= 0 {
+			a.queue = a.queue[a.placeOf(a.queue, i)+1:]
+			a.refresh()
+		}
+		at := a.listAt
 		a.start(in.ID)
+		a.listAt = at
+	case AddPaths:
+		switch to := string(in.To); {
+		case in.To == QueueList || strings.HasPrefix(to, "p:"):
+			a.spreadOut(in.Paths, in.To, in.At, in.Play)
+		default:
+			a.addPaths(in.Paths, "")
+		}
+	case Enqueue:
+		keys := a.keys(in.Tracks)
+		if in.Next {
+			a.queue = append(keys, a.queue...)
+		} else {
+			a.queue = append(a.queue, keys...)
+		}
+		a.refresh()
+		if in.Play && a.Current == 0 {
+			a.playSoon = true
+			a.startSoon()
+		}
+	case Unqueue:
+		if i := a.placeOf(a.queue, in.At); i >= 0 {
+			k := a.queue[i]
+			a.queue = slices.Delete(a.queue, i, i+1)
+			if e := a.byKey[k]; e != nil && !a.wanted(e) {
+				a.remove(e)
+			}
+			a.refresh()
+		}
+	case MoveInQueue:
+		from, to := a.placeOf(a.queue, in.From), a.placeOf(a.queue, in.To)
+		if from >= 0 && to >= 0 && from != to {
+			k := a.queue[from]
+			a.queue = slices.Insert(slices.Delete(a.queue, from, from+1), to, k)
+			a.refresh()
+		}
+	case ClearQueue:
+		gone := a.queue
+		a.queue = nil
+		for _, k := range gone {
+			if e := a.byKey[k]; e != nil && !a.wanted(e) {
+				a.remove(e)
+			}
+		}
+		a.refresh()
 	case TogglePlay:
 		switch {
+		case a.Current == 0 && len(a.Queue) > 0:
+			a.playNext()
 		case a.Current == 0 && len(a.Library) > 0:
 			a.From = AllTracks
 			a.start(a.Library[0])
@@ -750,6 +874,9 @@ func (a *app) handle(in gunim.Intent) {
 		a.kept.Playlists = append(a.kept.Playlists, savedList{ID: in.ID, Name: in.Name, Paths: a.keys(in.Tracks)})
 		a.dirty = true
 		a.refresh()
+		if len(in.Paths) > 0 {
+			a.spreadOut(in.Paths, PlaylistList(in.ID), -1, false)
+		}
 	case RenamePlaylist:
 		if p := a.playlist(in.ID); p != nil && strings.TrimSpace(in.Name) != "" {
 			p.Name = strings.TrimSpace(in.Name)
@@ -784,7 +911,7 @@ func (a *app) handle(in gunim.Intent) {
 		if p == nil {
 			return
 		}
-		if i := a.placeOf(p, in.At); i >= 0 {
+		if i := a.placeOf(p.Paths, in.At); i >= 0 {
 			k := p.Paths[i]
 			p.Paths = slices.Delete(p.Paths, i, i+1)
 			if e := a.byKey[k]; e != nil && !a.wanted(e) {
@@ -798,7 +925,7 @@ func (a *app) handle(in gunim.Intent) {
 		if p == nil {
 			return
 		}
-		from, to := a.placeOf(p, in.From), a.placeOf(p, in.To)
+		from, to := a.placeOf(p.Paths, in.From), a.placeOf(p.Paths, in.To)
 		if from < 0 || to < 0 || from == to {
 			return
 		}
@@ -821,6 +948,10 @@ func (a *app) start(id int) {
 		return
 	}
 	a.voice = a.d.play(src, closer, false)
+	// The list playing goes on from its track played last.
+	if slices.Contains(a.list(a.From), id) {
+		a.listAt = id
+	}
 	if a.Current != id {
 		a.history = append(a.history, id)
 		a.dropGone()
@@ -862,8 +993,7 @@ func (a *app) ended() {
 		a.start(a.Current)
 		return
 	}
-	if n := a.next(); n != 0 {
-		a.start(n)
+	if a.playNext() {
 		return
 	}
 	a.Playing = false
@@ -873,8 +1003,44 @@ func (a *app) ended() {
 	a.refresh()
 }
 
-// next returns the track after the current one on the list playing,
-// as shuffle and repeat say, or zero at the end.
+// playNext plays what comes next: the first track on Up next, or the
+// track after the last of the list playing. It reports whether there
+// was one.
+func (a *app) playNext() bool {
+	for len(a.queue) > 0 {
+		k := a.queue[0]
+		a.queue = a.queue[1:]
+		if e := a.byKey[k]; e != nil {
+			a.refresh()
+			// A track of Up next leaves the list where it was.
+			at := a.listAt
+			a.start(e.ID)
+			a.listAt = at
+			return true
+		}
+	}
+	if n := a.next(); n != 0 {
+		a.start(n)
+		return true
+	}
+	return false
+}
+
+// startSoon starts Up next once its first track is read, if a drop
+// asked for it and nothing plays.
+func (a *app) startSoon() {
+	if !a.playSoon || a.Current != 0 {
+		a.playSoon = false
+		return
+	}
+	if len(a.Queue) > 0 {
+		a.playSoon = false
+		a.playNext()
+	}
+}
+
+// next returns the track after the list playing's last, as shuffle
+// and repeat say, or zero at the end.
 func (a *app) next() int {
 	list := a.list(a.From)
 	if len(list) == 0 {
@@ -890,7 +1056,7 @@ func (a *app) next() int {
 			}
 		}
 	}
-	i := slices.Index(list, a.Current)
+	i := slices.Index(list, a.listAt)
 	switch {
 	case i+1 < len(list):
 		return list[i+1]
@@ -904,9 +1070,7 @@ func (a *app) next() int {
 func (a *app) skip(back bool) {
 	list := a.list(a.From)
 	if !back {
-		if n := a.next(); n != 0 {
-			a.start(n)
-		} else if len(list) > 0 {
+		if !a.playNext() && len(list) > 0 {
 			a.start(list[0])
 		}
 		return
@@ -925,10 +1089,89 @@ func (a *app) skip(back bool) {
 		a.start(prev)
 		return
 	}
+	// From a track of Up next, Back goes to the list's track it broke
+	// into.
+	if a.Current != a.listAt && slices.Contains(list, a.listAt) {
+		a.start(a.listAt)
+		return
+	}
 	i := slices.Index(list, a.Current)
 	if i > 0 {
 		a.start(list[i-1])
 	} else {
 		a.d.seek(0)
 	}
+}
+
+// spreadOut opens the folders among paths, in the background, and
+// hands the files to place, for the list to.
+func (a *app) spreadOut(paths []string, to ListID, at int, play bool) {
+	go func() {
+		var files []string
+		for _, path := range paths {
+			if abs, err := filepath.Abs(path); err == nil {
+				path = abs
+			}
+			fi, err := os.Stat(path)
+			switch {
+			case err != nil:
+			case fi.IsDir():
+				var inside []string
+				_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+					if err == nil && !d.IsDir() && isTrack(p) && len(inside) < maxTracks {
+						inside = append(inside, p)
+					}
+					return nil
+				})
+				slices.Sort(inside)
+				files = append(files, inside...)
+			case isTrack(path):
+				files = append(files, path)
+			}
+		}
+		select {
+		case a.spread <- spread{files, to, at, play}:
+		case <-a.ctx.Done():
+		}
+	}()
+}
+
+// place puts files dropped on a list on it, at their place, and reads
+// those the library has yet to.
+func (a *app) place(x spread) {
+	if len(x.paths) == 0 {
+		return
+	}
+	insert := func(keys []string) []string {
+		i := len(keys)
+		if x.at >= 0 {
+			if j := a.placeOf(keys, x.at); j >= 0 {
+				i = j
+			}
+		}
+		return slices.Insert(keys, i, x.paths...)
+	}
+	switch s := string(x.to); {
+	case x.to == QueueList:
+		a.queue = insert(a.queue)
+		if x.play && a.Current == 0 {
+			a.playSoon = true
+		}
+	case strings.HasPrefix(s, "p:"):
+		p := a.playlist(s[2:])
+		if p == nil {
+			return
+		}
+		p.Paths = insert(p.Paths)
+		a.dirty = true
+	}
+	var read []string
+	for _, path := range x.paths {
+		if a.byKey[path] == nil && !slices.Contains(read, path) {
+			read = append(read, path)
+		}
+	}
+	a.readFiles(read)
+	a.refresh()
+	a.startSoon()
 }

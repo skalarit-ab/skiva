@@ -18,6 +18,7 @@ import (
 // the music's spectrum; its title; the seek bar; and the buttons.
 type nowPlaying struct {
 	root                              *playerRoot
+	drop                              *dropArea
 	d                                 *deck
 	record                            *record
 	titles                            *titles
@@ -27,7 +28,7 @@ type nowPlaying struct {
 }
 
 func newNowPlaying(r *playerRoot, d *deck) *nowPlaying {
-	n := &nowPlaying{root: r, d: d}
+	n := &nowPlaying{root: r, d: d, drop: newDropArea()}
 	n.record = newRecord(r.meter)
 	n.titles = newTitles()
 	n.seek = newSeekBar(n)
@@ -110,11 +111,23 @@ func (n *nowPlaying) Layout(c gunim.Constraints, _ gunim.Frame, kids gunim.Child
 	return size
 }
 
-// Paint implements [gunim.Node].
-func (n *nowPlaying) Paint(p *paint.Painter, _ gunim.Frame, _ geom.Size, kids gunim.Children) {
+// Paint implements [gunim.Node]: and, over it all, the frame of a drag
+// over the track playing.
+func (n *nowPlaying) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids gunim.Children) {
 	for k := range kids.All {
 		k.Paint(p)
 	}
+	n.drop.paint(p, f, box, n.root.bg.accent.Value())
+}
+
+// Step implements [gunim.Animator].
+func (n *nowPlaying) Step(dt time.Duration) bool { return n.drop.Step(dt) }
+
+// Handle implements [gunim.Handler]: files and tracks dragged over the
+// track playing go on Up next.
+func (n *nowPlaying) Handle(e input.Event, u *gunim.UI) bool {
+	n.drop.playing = n.root.state.Current != 0
+	return n.drop.handle(n, e, u)
 }
 
 // ringScale is how much larger than the record its spectrum ring
@@ -577,6 +590,10 @@ type iconButton struct {
 	accent                   *anim.Color
 	held                     bool
 	size                     geom.Size
+	// dwell, when set, runs as a drag rests on the button, as a folder
+	// springs open; stopDwell stops the wait.
+	dwell     func(*gunim.UI)
+	stopDwell func()
 }
 
 func newIconButton(ic *icon.Icon, _ float32, press func(*gunim.UI)) *iconButton {
@@ -634,6 +651,28 @@ func (b *iconButton) Handle(e input.Event, u *gunim.UI) bool {
 			u.Cue(gunim.CuePress, b)
 			b.press(u)
 		}
+	case input.DragOver:
+		if b.dwell == nil {
+			return false
+		}
+		if b.stopDwell == nil {
+			b.hover.Animate(1, anim.Snappy)
+			b.down.Animate(1, anim.Tween{Duration: dwell})
+			b.stopDwell = u.After(dwell, func(u *gunim.UI) {
+				b.stopDwell = nil
+				b.hover.Animate(0, anim.Gentle)
+				b.down.Animate(0, anim.Spring{Response: 0.4, Damping: 0.45})
+				u.Cue(gunim.CuePress, b)
+				b.dwell(u)
+			})
+		}
+	case input.DragLeave:
+		if b.stopDwell != nil {
+			b.stopDwell()
+			b.stopDwell = nil
+		}
+		b.hover.Animate(0, anim.Gentle)
+		b.down.Animate(0, anim.Gentle)
 	default:
 		return false
 	}
