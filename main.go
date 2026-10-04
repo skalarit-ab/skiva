@@ -42,7 +42,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"time"
 
 	"github.com/marrasen/gunim"
@@ -79,23 +78,10 @@ func main() {
 		log.Fatalf("music: -size %q: want a width and a height, as 400x820", *size)
 	}
 	start := startAt{on: *play, track: *track, at: *at}
-	lib := setup{file: *state, dir: *dir, home: defaultDir()}
+	lib := setup{file: *state, dir: *dir}
 	if err := run(lib, start, *library, *list, *eqOpen, *infoOpen, *runFor, *shot, *after, geom.Sz(w, h)); err != nil {
 		log.Fatal(err)
 	}
-}
-
-// defaultDir returns the user's music folder where there is one.
-func defaultDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	d := filepath.Join(home, "Music")
-	if st, err := os.Stat(d); err == nil && st.IsDir() {
-		return d
-	}
-	return ""
 }
 
 // startAt says what to play as the window opens, if anything.
@@ -124,6 +110,11 @@ func run(at setup, play startAt, library bool, list string, eqOpen, infoOpen boo
 			return fmt.Errorf("music: %w", err)
 		}
 		registerViews(w, d, library, list, eqOpen, infoOpen)
+		// The user's music folder, as the system names it, and leave to
+		// read it, which a phone asks the user for.
+		at.home = a.UserFolder(driver.FolderMusic)
+		at.permitted = func() bool { return a.Permitted(driver.PermissionMusic) }
+		at.ask = func() bool { return a.Ask(driver.PermissionMusic) }
 		c := w.Client()
 		if shot != "" {
 			go func() {

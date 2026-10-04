@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image/color"
 	"io/fs"
 	"log"
@@ -339,6 +340,11 @@ type app struct {
 	// carries what was chosen.
 	choose func(driver.ChooseOptions) ([]string, error)
 	chosen chan chosen
+	// home is the user's music folder, askMusic asks the user for
+	// leave to read their music, and granted carries their answer.
+	home     string
+	askMusic func() bool
+	granted  chan bool
 }
 
 // spread is files dropped on a list, with the folders among them
@@ -364,6 +370,9 @@ type setup struct {
 	// dir is a folder to follow, as -dir names, and home the folder
 	// followed on the first run, the user's music folder.
 	dir, home string
+	// permitted reports whether the player may read the user's music,
+	// and ask asks the user, as a phone's system does; nil for always.
+	permitted, ask func() bool
 }
 
 // newApp returns the application half, with the library kept in file
@@ -379,6 +388,7 @@ func newApp(ctx context.Context, d *deck, file string) *app {
 		following: map[string]context.CancelFunc{},
 		reading:   map[string]bool{},
 		chosen:    make(chan chosen, 1),
+		granted:   make(chan bool, 1),
 		spread:    make(chan spread, 4),
 	}
 	a.Volume = d.volume
@@ -400,6 +410,7 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 	}
 	go a.z.run(ctx.Done())
 	a.choose = func(o driver.ChooseOptions) ([]string, error) { return c.ChooseFiles(ctx, o) }
+	a.home, a.askMusic = at.home, at.ask
 	kept, ok := loadSaved(at.file)
 	a.kept = kept
 	if !ok && at.home != "" {
@@ -432,6 +443,11 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 		return err
 	}
 	_ = c.Focus("player")
+	// On a phone the player asks leave to read the user's music, as it
+	// starts, until it has it.
+	if at.permitted != nil && !at.permitted() {
+		a.askLeave()
+	}
 	// -play starts once the folders are read, so its track counts
 	// theirs too.
 	startPlay := func() {
@@ -522,6 +538,8 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 			continue
 		case got := <-a.chosen:
 			a.addPaths(got.paths, got.playlist)
+		case ok := <-a.granted:
+			a.onGranted(ok)
 		case x := <-a.spread:
 			a.place(x)
 		case r := <-a.z.out:
@@ -882,16 +900,65 @@ func (a *app) placeOf(keys []string, at int) int {
 	return -1
 }
 
+// askLeave asks the user, in the background, for leave to read their
+// music, and hands their answer to the loop.
+func (a *app) askLeave() {
+	if a.askMusic == nil {
+		return
+	}
+	go func() {
+		ok := a.askMusic()
+		select {
+		case a.granted <- ok:
+		case <-a.ctx.Done():
+		}
+	}()
+}
+
+// onGranted follows the user's music folder once the user lets the
+// player read their music, and reads every folder followed through
+// again: read before, they showed nothing.
+func (a *app) onGranted(ok bool) {
+	if !ok {
+		return
+	}
+	if a.home != "" {
+		a.follow(a.home)
+	}
+	for _, dir := range slices.Clone(a.kept.Folders) {
+		if cancel := a.following[dir]; cancel != nil {
+			cancel()
+		}
+		delete(a.following, dir)
+		a.startFollowing(dir)
+	}
+	a.refresh()
+}
+
 // ask shows the system's dialog in the background, and hands what was
-// chosen to the loop.
+// chosen to the loop. Where the system has no dialog to choose a
+// folder, as a phone's, the player follows the user's music folder,
+// once the user lets it read their music.
 func (a *app) ask(o driver.ChooseOptions, playlist string) {
 	if a.choose == nil {
 		return
 	}
 	go func() {
 		paths, err := a.choose(o)
+		if errors.Is(err, driver.ErrNoChooser) && o.Folders {
+			ok := a.askMusic == nil || a.askMusic()
+			select {
+			case a.granted <- ok:
+			case <-a.ctx.Done():
+			}
+			return
+		}
 		if err != nil {
 			log.Printf("music: %v", err)
+			return
+		}
+		// A folder chosen on a phone is read with leave to read music.
+		if o.Folders && len(paths) > 0 && a.askMusic != nil && !a.askMusic() {
 			return
 		}
 		if len(paths) > 0 {
