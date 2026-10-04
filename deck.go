@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"sync"
 	"time"
 
@@ -23,6 +24,9 @@ type deck struct {
 	an *audio.Analyzer
 	// eq is the equalizer every track plays through.
 	eq *audio.EQ
+	// gain is the loudness gain of the track playing, as a ratio, on
+	// top of the volume.
+	gain float32
 }
 
 // bandCount is how many bands of pitch the visuals draw.
@@ -31,7 +35,7 @@ const bandCount = 36
 func newDeck(mix *audio.Mixer) *deck {
 	an := audio.NewAnalyzer(mix, bandCount)
 	an.Tilt = 4
-	return &deck{mix: mix, volume: 0.8, an: an, eq: audio.NewEQ()}
+	return &deck{mix: mix, volume: 0.8, an: an, eq: audio.NewEQ(), gain: 1}
 }
 
 // crossfade is how long a track playing fades out as another starts.
@@ -50,7 +54,9 @@ func (d *deck) play(src audio.Seeker, closer func(), paused bool) *audio.Voice {
 			oldClose()
 		}()
 	}
-	d.voice = d.mix.Play(src, audio.Options{Volume: d.volume, FadeIn: 30 * time.Millisecond, Paused: paused,
+	// A volume of zero would play at 1, as Options takes it: a muted
+	// track starts as near silent as makes no odds.
+	d.voice = d.mix.Play(src, audio.Options{Volume: max(d.volume*d.gain, 1e-6), FadeIn: 30 * time.Millisecond, Paused: paused,
 		Insert: d.eq.Insert()})
 	d.closer = closer
 	return d.voice
@@ -101,7 +107,7 @@ func (d *deck) setVolume(v float32) {
 	defer d.mu.Unlock()
 	d.volume = v
 	if d.voice != nil {
-		d.voice.SetVolume(v, anim.Spring{Response: 0.25, Damping: 1})
+		d.voice.SetVolume(v*d.gain, anim.Spring{Response: 0.25, Damping: 1})
 	}
 }
 
@@ -131,4 +137,16 @@ func (d *deck) spectrum(freqs, heard, before []float32) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.an.Spectrum(freqs, heard, before)
+}
+
+// setGain sets the loudness gain of the track playing, in decibels:
+// for the next track to start at, or gliding where glide, over most of
+// a second, as a gain set while a track plays should go unnoticed.
+func (d *deck) setGain(db float64, glide bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.gain = float32(math.Pow(10, db/20))
+	if d.voice != nil && glide {
+		d.voice.SetVolume(d.volume*d.gain, anim.Spring{Response: 0.8, Damping: 1})
+	}
 }

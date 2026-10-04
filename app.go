@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"io/fs"
 	"log"
+	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -50,6 +51,14 @@ type (
 		Scanning bool
 		// EQ is the equalizer's settings.
 		EQ EQ
+		// GainMode is how loudness gain evens tracks out; Gain is the
+		// gain the track playing plays at, in decibels, GainBy what it
+		// follows, and AlbumLUFS its album's loudness, where that is
+		// what it follows.
+		GainMode  GainMode
+		Gain      float32
+		GainBy    GainSource
+		AlbumLUFS float32
 	}
 	// EQ is the equalizer: its bands, and whether it is bypassed.
 	EQ struct {
@@ -71,7 +80,26 @@ type (
 		// Peaks is how loud the track is along its length, from 0 to 1,
 		// for the seek bar; nil until it is known.
 		Peaks []float32
+		// File is the track's file, and Size its size in bytes; empty
+		// for a song made in code.
+		File string
+		Size int64
+		// Format is what the track is stored as; Measured says its
+		// loudness is known: LUFS, as BS.1770 measures it, and Peak, its
+		// loudest sample, 1 at full scale.
+		Format   audio.Format
+		Measured bool
+		LUFS     float32
+		Peak     float32
 	}
+	// GainMode says how loudness gain evens tracks out: not at all,
+	// each track to the same loudness, or each album, so an album's
+	// quiet songs stay quiet. An album plays at its album's gain in
+	// order, and at each track's when shuffled or from a playlist or
+	// Up next, where tracks of many albums meet.
+	GainMode int
+	// GainSource says what the gain playing follows.
+	GainSource int
 	// Playlist is a list of tracks the user made. A track may be on it
 	// more than once.
 	Playlist struct {
@@ -174,6 +202,8 @@ type (
 	MoveInQueue struct{ From, To int }
 	// ClearQueue empties Up next.
 	ClearQueue struct{}
+	// SetGainMode sets how loudness gain evens tracks out.
+	SetGainMode struct{ Mode GainMode }
 	// SetEQ sets the equalizer, as it is changed: often, while a band
 	// is dragged.
 	SetEQ struct{ EQ EQ }
@@ -184,6 +214,22 @@ const (
 	RepeatOff Repeat = iota
 	RepeatAll
 	RepeatOne
+)
+
+// The settings of GainMode, and what a gain may follow.
+const (
+	GainOff GainMode = iota
+	GainTrack
+	GainAlbum
+)
+
+const (
+	// GainNone: no gain, as gain is off, or the track is silent.
+	GainNone GainSource = iota
+	GainByTrack
+	GainByAlbum
+	// GainMeasuring: the track's loudness is still being measured.
+	GainMeasuring
 )
 
 // AllTracks is the whole library, as a list to play from, and
@@ -236,8 +282,13 @@ type app struct {
 	rng    *rand.Rand
 	// seeks counts the seeks, for the media controls to hear of each.
 	seeks int
-	// peaksDone carries peaks read in the background.
-	peaksDone chan peaksRead
+	// z reads tracks through in the background, for their loudness and
+	// their peaks, which analyses keeps, in afile; analysesDirty says
+	// they changed since they were written.
+	z             *analyzer
+	analyses      map[string]analysis
+	afile         string
+	analysesDirty bool
 
 	// kept is the library as kept between runs, in file, and dirty
 	// says it changed since it was written.
@@ -256,11 +307,6 @@ type app struct {
 	// carries what was chosen.
 	choose func(driver.ChooseOptions) ([]string, error)
 	chosen chan chosen
-}
-
-type peaksRead struct {
-	id    int
-	peaks []float32
 }
 
 // spread is files dropped on a list, with the folders among them
@@ -293,9 +339,10 @@ type setup struct {
 func newApp(ctx context.Context, d *deck, file string) *app {
 	a := &app{
 		d: d, entries: map[int]*entry{}, byKey: map[string]*entry{},
-		rng:       rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 7)),
-		peaksDone: make(chan peaksRead, 4),
-		ctx:       ctx, file: file,
+		rng:      rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 7)),
+		z:        newAnalyzer(),
+		analyses: map[string]analysis{},
+		ctx:      ctx, file: file,
 		changes:   make(chan change, 64),
 		following: map[string]context.CancelFunc{},
 		reading:   map[string]bool{},
@@ -312,6 +359,14 @@ func newApp(ctx context.Context, d *deck, file string) *app {
 // serve keeps the player's state and hears what the window sends.
 func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt, show nowShower) error {
 	a := newApp(ctx, d, at.file)
+	if at.file != "" {
+		a.afile = analysisFile()
+		a.analyses = loadAnalyses(a.afile)
+		for _, e := range a.order {
+			a.learn(e)
+		}
+	}
+	go a.z.run(ctx.Done())
 	a.choose = func(o driver.ChooseOptions) ([]string, error) { return c.ChooseFiles(ctx, o) }
 	kept, ok := loadSaved(at.file)
 	a.kept = kept
@@ -324,6 +379,11 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 		d.setVolume(a.Volume)
 	}
 	a.Shuffle, a.Repeat = kept.Shuffle, kept.Repeat
+	if kept.GainMode != nil {
+		a.GainMode = *kept.GainMode
+	} else {
+		a.GainMode = GainAlbum
+	}
 	if kept.EQ != nil {
 		a.setEQ(*kept.EQ)
 	}
@@ -397,7 +457,7 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 		if a.voice != nil {
 			ended = a.voice.Done()
 		}
-		if a.dirty && keep == nil {
+		if (a.dirty || a.analysesDirty) && keep == nil {
 			keep = time.After(500 * time.Millisecond)
 		}
 		select {
@@ -424,10 +484,15 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 			a.addPaths(got.paths, got.playlist)
 		case x := <-a.spread:
 			a.place(x)
-		case p := <-a.peaksDone:
-			if e := a.entries[p.id]; e != nil {
-				e.Peaks = p.peaks
+		case r := <-a.z.out:
+			a.analyses[r.key] = r.a
+			a.analysesDirty = true
+			if e := a.byKey[r.key]; e != nil {
+				e.analyzed(r.a)
 				a.refresh()
+				if cur := a.entries[a.Current]; cur != nil && albumKey(cur) == albumKey(e) {
+					a.applyGain(true)
+				}
 			}
 		case <-ended:
 			a.ended()
@@ -441,8 +506,15 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 	}
 }
 
-// save writes the library where it is kept, if it changed.
+// save writes the library where it is kept, and the analyses, if they
+// changed.
 func (a *app) save() {
+	if a.analysesDirty {
+		a.analysesDirty = false
+		if err := writeAnalyses(a.afile, a.analyses); err != nil {
+			log.Printf("music: keeping the analyses: %v", err)
+		}
+	}
 	if !a.dirty {
 		return
 	}
@@ -476,6 +548,7 @@ func (a *app) apply(ch change) {
 			a.order = append(a.order, ch.e)
 			sortEntries(a.order)
 		}
+		a.learn(a.byKey[ch.e.key])
 		if ch.root != "" {
 			e := a.byKey[ch.e.key]
 			if e.roots == nil {
@@ -835,6 +908,12 @@ func (a *app) handle(in gunim.Intent) {
 			a.queue = slices.Insert(slices.Delete(a.queue, from, from+1), to, k)
 			a.refresh()
 		}
+	case SetGainMode:
+		a.GainMode = in.Mode
+		m := in.Mode
+		a.kept.GainMode = &m
+		a.dirty = true
+		a.applyGain(true)
 	case SetEQ:
 		a.setEQ(in.EQ)
 		eq := in.EQ
@@ -875,6 +954,7 @@ func (a *app) handle(in gunim.Intent) {
 		a.Shuffle = !a.Shuffle
 		a.kept.Shuffle = a.Shuffle
 		a.dirty = true
+		a.applyGain(true)
 	case CycleRepeat:
 		a.Repeat = (a.Repeat + 1) % 3
 		a.kept.Repeat = a.Repeat
@@ -968,6 +1048,12 @@ func (a *app) start(id int) {
 		log.Printf("music: %s: %v", e.Title, err)
 		return
 	}
+	if e.an == nil {
+		a.z.want(e, true)
+	}
+	// The track starts at its own gain, worked out for the list it
+	// plays from.
+	a.gainFor(e, false)
 	a.voice = a.d.play(src, closer, false)
 	// The list playing goes on from its track played last.
 	if slices.Contains(a.list(a.From), id) {
@@ -979,13 +1065,79 @@ func (a *app) start(id int) {
 	}
 	a.Current, a.Playing = id, true
 	a.Starts++
-	if e.Peaks == nil && e.path != "" {
-		go func(id int, path string) {
-			if p := filePeaks(path); p != nil {
-				a.peaksDone <- peaksRead{id, p}
-			}
-		}(id, e.path)
+}
+
+// learn gives e what was kept of it from a run before, where its file
+// is unchanged since, or else asks for it to be read through.
+func (a *app) learn(e *entry) {
+	if e == nil || e.an != nil {
+		return
 	}
+	if an, ok := a.analyses[e.key]; ok && an.fresh(e.path) {
+		e.analyzed(an)
+		return
+	}
+	a.z.want(e, false)
+}
+
+// gainOf returns the gain e plays at, in decibels, what it follows,
+// and its album's loudness where that is it.
+func (a *app) gainOf(e *entry) (db float64, by GainSource, album float64) {
+	if e == nil || a.GainMode == GainOff {
+		return 0, GainNone, 0
+	}
+	if e.an == nil {
+		return 0, GainMeasuring, 0
+	}
+	// Album gain fits an album played in order; shuffled, or from a
+	// list of many albums' tracks, each track evens out on its own.
+	if a.GainMode == GainAlbum && !a.Shuffle && (a.From == AllTracks || strings.HasPrefix(string(a.From), "f:")) {
+		if lufs, peak, ok := a.albumLoudness(e); ok {
+			return min(targetLUFS-lufs, -dB(float64(max(peak, 1e-6)))), GainByAlbum, lufs
+		}
+	}
+	if !e.an.Loud {
+		return 0, GainNone, 0
+	}
+	// A track lifted plays no louder than its peak lets it, unclipped.
+	return min(targetLUFS-e.an.LUFS, -dB(float64(max(e.an.Peak, 1e-6)))), GainByTrack, 0
+}
+
+// albumKey names e's album: its title, in its folder.
+func albumKey(e *entry) string {
+	return filepath.Dir(e.path) + "\x00" + strings.ToLower(e.Album)
+}
+
+// albumLoudness returns the loudness of e's album, from its tracks
+// measured so far, each counting for its length, and its loudest
+// sample.
+func (a *app) albumLoudness(e *entry) (lufs float64, peak float32, ok bool) {
+	key := albumKey(e)
+	var energy, weight float64
+	for _, o := range a.order {
+		if o.an == nil || !o.an.Loud || albumKey(o) != key {
+			continue
+		}
+		w := max(o.Length.Seconds(), 1)
+		energy += w * math.Pow(10, o.an.LUFS/10)
+		weight += w
+		peak = max(peak, o.an.Peak)
+	}
+	if weight == 0 {
+		return 0, 0, false
+	}
+	return 10 * math.Log10(energy/weight), peak, true
+}
+
+// applyGain sets the gain the track playing plays at, gliding to it
+// where it plays already.
+func (a *app) applyGain(glide bool) { a.gainFor(a.entries[a.Current], glide) }
+
+// gainFor sets the gain track e plays at, gliding to it where glide.
+func (a *app) gainFor(e *entry, glide bool) {
+	db, by, album := a.gainOf(e)
+	a.Gain, a.GainBy, a.AlbumLUFS = float32(db), by, float32(album)
+	a.d.setGain(db, glide)
 }
 
 // dropGone forgets the track playing if it has left the library, as
@@ -994,17 +1146,6 @@ func (a *app) dropGone() {
 	if e := a.entries[a.Current]; e != nil && a.byKey[e.key] != e {
 		delete(a.entries, a.Current)
 	}
-}
-
-// filePeaks reads a file's peaks, or returns nil.
-func filePeaks(path string) []float32 {
-	e := &entry{path: path}
-	src, closer, err := e.open()
-	if err != nil {
-		return nil
-	}
-	defer closer()
-	return peaksOf(src)
 }
 
 // setEQ puts the equalizer's settings in play.

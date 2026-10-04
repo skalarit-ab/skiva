@@ -25,7 +25,12 @@
 //
 // Keys: Space plays and pauses, Left and Right seek, Up and Down set
 // the volume, N and P skip, S shuffles, R repeats, E opens the
-// equalizer.
+// equalizer, and I the track's card.
+//
+// Loudness gain evens tracks out as ReplayGain 2 does: each track's
+// loudness is measured as ITU-R BS.1770 defines it, and the track, or
+// its album played in order, plays at -18 LUFS. Its button steps
+// between no gain, track gain and album gain.
 package main
 
 import (
@@ -59,6 +64,7 @@ func main() {
 	size := flag.String("size", "1100x720", "the window's size, as 400x820 for one shaped like a phone")
 	library := flag.Bool("library", false, "open with the library over the track playing, on a narrow window")
 	eqOpen := flag.Bool("eq", false, "open with the equalizer showing, for -shot")
+	infoOpen := flag.Bool("info", false, "open with the track's card showing, for -shot")
 	list := flag.String("list", "", "open the library on the list of this name, as a playlist's, for -shot")
 	flag.Parse()
 	var w, h float32
@@ -67,7 +73,7 @@ func main() {
 	}
 	start := startAt{on: *play, track: *track, at: *at}
 	lib := setup{file: *state, dir: *dir, home: defaultDir()}
-	if err := run(lib, start, *library, *list, *eqOpen, *runFor, *shot, *after, geom.Sz(w, h)); err != nil {
+	if err := run(lib, start, *library, *list, *eqOpen, *infoOpen, *runFor, *shot, *after, geom.Sz(w, h)); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -92,7 +98,7 @@ type startAt struct {
 	at    time.Duration
 }
 
-func run(at setup, play startAt, library bool, list string, eqOpen bool, runFor time.Duration, shot string, after time.Duration, size geom.Size) error {
+func run(at setup, play startAt, library bool, list string, eqOpen, infoOpen bool, runFor time.Duration, shot string, after time.Duration, size geom.Size) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	if runFor > 0 {
@@ -110,7 +116,7 @@ func run(at setup, play startAt, library bool, list string, eqOpen bool, runFor 
 		if err != nil {
 			return fmt.Errorf("music: %w", err)
 		}
-		registerViews(w, d, library, list, eqOpen)
+		registerViews(w, d, library, list, eqOpen, infoOpen)
 		c := w.Client()
 		if shot != "" {
 			go func() {

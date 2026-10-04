@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"image/color"
 	"math"
 	"time"
@@ -25,6 +26,7 @@ type nowPlaying struct {
 	seek                              *seekBar
 	shuffle, back, play, next, repeat *iconButton
 	volume                            *volumeBar
+	gain                              *gainPill
 }
 
 func newNowPlaying(r *playerRoot, d *deck) *nowPlaying {
@@ -40,6 +42,7 @@ func newNowPlaying(r *playerRoot, d *deck) *nowPlaying {
 	n.next = newIconButton(icon.SkipForward, 48, send(Skip{}))
 	n.repeat = newIconButton(icon.Repeat, 40, send(CycleRepeat{}))
 	n.volume = newVolumeBar(n)
+	n.gain = newGainPill()
 	return n
 }
 
@@ -64,11 +67,13 @@ func (n *nowPlaying) show(was, s Player, t Track) {
 		b.accent.Animate(t.Accent, anim.Spring{Response: 0.8, Damping: 1})
 	}
 	n.volume.show(s.Volume, t.Accent)
+	n.volume.showGain(s, t)
+	n.gain.show(s.GainMode, t.Accent)
 }
 
 // Children implements [gunim.Composite].
 func (n *nowPlaying) Children() []gunim.Node {
-	return []gunim.Node{n.record, n.titles, n.seek, n.shuffle, n.back, n.play, n.next, n.repeat, n.volume}
+	return []gunim.Node{n.record, n.titles, n.seek, n.shuffle, n.back, n.play, n.next, n.repeat, n.volume, n.gain}
 }
 
 // Layout implements [gunim.Node]: everything in a column, centred, the
@@ -107,7 +112,13 @@ func (n *nowPlaying) Layout(c gunim.Constraints, _ gunim.Frame, kids gunim.Child
 		k.Place(geom.Pt(cx+spread[i]-s/2, y+(buttonsH-s)/2))
 	}
 	y += buttonsH + gap
-	place(8, min(wide, 260), volumeH)
+	// The volume, and beside it how loudness gain evens tracks out.
+	volW := min(wide-pillW-10, 240)
+	left := cx - (volW+10+pillW)/2
+	kids.At(8).Layout(gunim.Tight(geom.Sz(volW, volumeH)))
+	kids.At(8).Place(geom.Pt(left, y))
+	kids.At(9).Layout(gunim.Tight(geom.Sz(pillW, 28)))
+	kids.At(9).Place(geom.Pt(left+volW+10, y+(volumeH-28)/2))
 	return size
 }
 
@@ -734,6 +745,13 @@ type volumeBar struct {
 	anim.Group
 	n      *nowPlaying
 	volume float32
+	// gain is the loudness gain of the track playing, in decibels, by
+	// what it follows; gainOn shows it as the pointer comes over the
+	// bar, and words says what it is.
+	gain   float32
+	by     GainSource
+	gainOn *anim.Float
+	words  [2]string
 	// before is the volume before a mute, for the speaker to bring back.
 	before float32
 	shown  *anim.Float
@@ -744,8 +762,9 @@ type volumeBar struct {
 }
 
 func newVolumeBar(n *nowPlaying) *volumeBar {
-	v := &volumeBar{n: n, shown: anim.NewFloat(0.8), hover: anim.NewFloat(0), accent: anim.NewColor(neutral), before: 0.8}
-	v.Add(v.shown, v.hover, v.accent)
+	v := &volumeBar{n: n, shown: anim.NewFloat(0.8), hover: anim.NewFloat(0), accent: anim.NewColor(neutral), before: 0.8,
+		gainOn: anim.NewFloat(0)}
+	v.Add(v.shown, v.hover, v.accent, v.gainOn)
 	return v
 }
 
@@ -770,9 +789,11 @@ func (v *volumeBar) Handle(e input.Event, u *gunim.UI) bool {
 	switch e := e.(type) {
 	case input.PointerEnter:
 		v.hover.Animate(1, anim.Snappy)
+		v.gainOn.Animate(1, anim.Spring{Response: 0.45, Damping: 0.8})
 	case input.PointerLeave:
 		if !v.held {
 			v.hover.Animate(0, anim.Gentle)
+			v.gainOn.Animate(0, anim.Gentle)
 		}
 	case input.PointerDown:
 		if e.Button != input.ButtonPrimary {
@@ -805,6 +826,7 @@ func (v *volumeBar) Handle(e input.Event, u *gunim.UI) bool {
 		v.held = false
 		if e.Pos.Y < 0 || e.Pos.Y > v.size.H {
 			v.hover.Animate(0, anim.Gentle)
+			v.gainOn.Animate(0, anim.Gentle)
 		}
 	default:
 		return false
@@ -837,5 +859,60 @@ func (v *volumeBar) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, _ guni
 	p.RRect(geom.Rc(x0, mid-h/2, (x1-x0)*vol, h), h/2, paint.Solid(v.accent.Value()))
 	k := 5 + 3*v.hover.Value()
 	kx := x0 + (x1-x0)*vol
+	v.paintGain(p, x0, x1, mid, kx, h)
 	p.RRect(geom.Rc(kx-k, mid-k, 2*k, 2*k), k, paint.Solid(ink))
+}
+
+// showGain takes the gain of the track playing, and says what it is.
+func (v *volumeBar) showGain(s Player, t Track) {
+	v.gain, v.by = s.Gain, s.GainBy
+	switch s.GainBy {
+	case GainByTrack:
+		v.words = [2]string{fmt.Sprintf("%+.1f dB track gain", s.Gain),
+			fmt.Sprintf("%.1f LUFS to %d", t.LUFS, targetLUFS)}
+	case GainByAlbum:
+		v.words = [2]string{fmt.Sprintf("%+.1f dB album gain", s.Gain),
+			fmt.Sprintf("album %.1f LUFS to %d", s.AlbumLUFS, targetLUFS)}
+	case GainMeasuring:
+		v.words = [2]string{"Measuring loudness…", ""}
+	case GainNone:
+		v.words = [2]string{}
+	}
+}
+
+// paintGain shows, as the pointer comes over the bar, where the
+// loudness gain takes the volume: a lighter stretch from the knob to
+// where the track plays, ringed there, and in words under the bar.
+// A gain past full scale points on past the bar's end.
+func (v *volumeBar) paintGain(p *paint.Painter, x0, x1, mid, kx, h float32) {
+	on := min(max(v.gainOn.Value(), 0), 1.2)
+	if on < 0.01 || v.words[0] == "" {
+		return
+	}
+	accent := v.accent.Value()
+	if v.by == GainByTrack || v.by == GainByAlbum {
+		eff := v.shown.Value() * float32(math.Pow(10, float64(v.gain)/20))
+		// The stretch grows out of the knob as it shows.
+		ex := kx + (x0+(x1-x0)*min(eff, 1)-kx)*min(on, 1)
+		lo, hi := min(kx, ex), max(kx, ex)
+		p.RRect(geom.Rc(lo, mid-h/2-1, hi-lo, h+2), (h+2)/2, paint.Solid(faded(mix(accent, ink, 0.5), 0.55*on)))
+		r := float32(6)
+		p.RRectStroke(geom.Rc(ex-r, mid-r, 2*r, 2*r), r, paint.Solid(color.NRGBA{}), paint.Stroke{Width: 2, Color: faded(accent, on)})
+		if eff > 1 {
+			// Past full scale: a chevron past the bar's end.
+			for i := range 2 {
+				x := x1 + 6 + float32(i)*5
+				segment(p, geom.Pt(x, mid-4), geom.Pt(x+3, mid), 1.5, faded(accent, on))
+				segment(p, geom.Pt(x+3, mid), geom.Pt(x, mid+4), 1.5, faded(accent, on))
+			}
+		}
+	}
+	// The words, under the bar, rising into place.
+	y := mid + 10 + 6*(1-min(on, 1))
+	run := shaped(v.words[0], 11, true)
+	run.Paint(p, geom.Pt((x0+x1)/2-run.Advance/2, y), faded(ink, 0.85*min(on, 1)))
+	if v.words[1] != "" {
+		run2 := shaped(v.words[1], 10, false)
+		run2.Paint(p, geom.Pt((x0+x1)/2-run2.Advance/2, y+14), faded(ink, 0.5*min(on, 1)))
+	}
 }

@@ -241,7 +241,7 @@ func noise(n int64) float64 {
 	return float64(x>>11)/float64(1<<53)*2 - 1
 }
 
-// peaks returns the song's loudness along it, as peaksOf does, from
+// peaks returns the song's loudness along it, as analyze does, from
 // samples spread through each stretch: a song is a function of time,
 // so it need not be played through.
 func (s *song) peaks() []float32 {

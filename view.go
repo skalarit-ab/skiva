@@ -17,7 +17,7 @@ import (
 
 // registerViews is the window half: the player's view, drawing from d
 // as it plays.
-func registerViews(w *gunim.Window, d *deck, openLibrary bool, list string, eqOpen bool) {
+func registerViews(w *gunim.Window, d *deck, openLibrary bool, list string, eqOpen, infoOpen bool) {
 	gunim.RegisterView(w, "player",
 		func(Player) *playerRoot {
 			r := newPlayerRoot(d)
@@ -27,6 +27,9 @@ func registerViews(w *gunim.Window, d *deck, openLibrary bool, list string, eqOp
 			r.lib.want = list
 			if eqOpen {
 				r.eq.open.Jump(1)
+			}
+			if infoOpen {
+				r.info.open.Jump(1)
 			}
 			return r
 		},
@@ -141,8 +144,11 @@ type playerRoot struct {
 	// it.
 	eq       *eqPanel
 	eqButton *iconButton
-	narrow   bool
-	size     geom.Size
+	// info tells about the track playing, and infoButton opens it.
+	info       *infoCard
+	infoButton *iconButton
+	narrow     bool
+	size       geom.Size
 }
 
 // narrowWidth is the width under which the library becomes a sheet.
@@ -160,6 +166,8 @@ func newPlayerRoot(d *deck) *playerRoot {
 	r.listButton = newIconButton(icon.ListMusic, 40, func(u *gunim.UI) { r.openSheet(r.sheet.Target() < 0.5, u) })
 	r.eq = newEQPanel(r)
 	r.eqButton = newIconButton(icon.SlidersHorizontal, 40, func(u *gunim.UI) { r.eq.show(!r.eq.shown(), u) })
+	r.info = newInfoCard(r)
+	r.infoButton = newIconButton(icon.Info, 40, func(u *gunim.UI) { r.info.show(!r.info.shown(), u) })
 	return r
 }
 
@@ -210,7 +218,7 @@ func (r *playerRoot) Step(dt time.Duration) bool {
 
 // Children implements [gunim.Composite].
 func (r *playerRoot) Children() []gunim.Node {
-	return []gunim.Node{r.bg, r.now, r.lib, r.listButton, r.eqButton, r.eq}
+	return []gunim.Node{r.bg, r.now, r.lib, r.listButton, r.eqButton, r.eq, r.infoButton, r.info}
 }
 
 // Focusable implements [gunim.Focusable]: the player's keys come here.
@@ -236,6 +244,18 @@ func (r *playerRoot) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Child
 		}
 		eqBtn.Layout(gunim.Tight(geom.Sz(40, 40)))
 		eqBtn.Place(btnAt)
+		// The track's card unfolds from its button, beside the
+		// equalizer's, under it, at the window's right.
+		infoAt := btnAt.Sub(geom.Pt(48, 0))
+		kids.At(6).Layout(gunim.Tight(geom.Sz(40, 40)))
+		kids.At(6).Place(infoAt)
+		card := kids.At(7).Layout(gunim.Loose(geom.Sz(min(infoW, safe.Size().W-24), safe.Size().H)))
+		cardAt := geom.Pt(max(safe.Min.X+12, btnAt.X+40-card.W), btnAt.Y+52)
+		r.info.from = infoAt.Add(geom.Pt(20, 20)).Sub(cardAt)
+		if r.info.open.Value() < 0.01 {
+			cardAt = geom.Pt(-10000, 0)
+		}
+		kids.At(7).Place(cardAt)
 		open := r.eq.open.Value()
 		eq.Layout(gunim.Tight(eqArea.Size()))
 		if open < 0.001 {
@@ -291,8 +311,10 @@ func (r *playerRoot) Paint(p *paint.Painter, _ gunim.Frame, box geom.Size, kids 
 }
 
 // paintEQ draws the equalizer over everything, dimming what is under
-// it as it rises.
+// it as it rises, and the track's card and its button over that.
 func (r *playerRoot) paintEQ(p *paint.Painter, box geom.Size, kids gunim.Children) {
+	defer kids.At(7).Paint(p)
+	defer kids.At(6).Paint(p)
 	open := r.eq.open.Value()
 	if open < 0.001 {
 		return
@@ -306,6 +328,11 @@ func (r *playerRoot) paintEQ(p *paint.Painter, box geom.Size, kids gunim.Childre
 func (r *playerRoot) Handle(e input.Event, u *gunim.UI) bool {
 	switch e := e.(type) {
 	case input.PointerDown:
+		if r.info.shown() {
+			// A press anywhere but the card puts it away.
+			r.info.show(false, u)
+			return true
+		}
 		if r.narrow && r.sheet.Target() > 0.5 && e.Pos.Y < r.size.H*0.14 {
 			r.openSheet(false, u)
 			return true
@@ -373,7 +400,13 @@ func (r *playerRoot) key(k input.KeyPress, u *gunim.UI) bool {
 		return false
 	case input.KeyE:
 		r.eq.show(!r.eq.shown(), u)
+	case input.KeyI:
+		r.info.show(!r.info.shown(), u)
 	case input.KeyEscape:
+		if r.info.shown() {
+			r.info.show(false, u)
+			return true
+		}
 		if r.eq.shown() {
 			r.eq.show(false, u)
 			return true

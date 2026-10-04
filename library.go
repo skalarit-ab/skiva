@@ -37,6 +37,8 @@ type entry struct {
 	key string
 	// roots holds the folders followed it lies in.
 	roots map[string]bool
+	// an is what reading it through told, nil until it is read.
+	an *analysis
 	// order sorts the library: by artist, album, disc and track.
 	order string
 }
@@ -59,6 +61,15 @@ func (e *entry) open() (audio.Seeker, func(), error) {
 		return nil, nil, err
 	}
 	return src, func() { _ = f.Close() }, nil
+}
+
+// analyzed takes what reading the track through told.
+func (e *entry) analyzed(an analysis) {
+	e.an = &an
+	if an.Peaks != nil {
+		e.Peaks = an.Peaks
+	}
+	e.Format, e.Measured, e.LUFS, e.Peak = an.Format, an.Loud, float32(an.LUFS), an.Peak
 }
 
 // demoEntries returns the demo songs, as an album.
@@ -98,6 +109,10 @@ func readEntry(path string) *entry {
 	}
 	defer func() { _ = f.Close() }()
 	e := &entry{path: path, key: path}
+	e.File = path
+	if fi, statErr := f.Stat(); statErr == nil {
+		e.Size = fi.Size()
+	}
 	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	e.Title, e.Album = name, filepath.Base(filepath.Dir(path))
 	var art image.Image
@@ -126,6 +141,7 @@ func readEntry(path string) *entry {
 	if l := src.Len(); l > 0 {
 		e.Length = audio.Duration(l)
 	}
+	e.Format, _ = audio.FormatOf(src)
 	if art == nil {
 		art = coverBeside(path)
 	}
@@ -173,37 +189,6 @@ func coverBeside(path string) image.Image {
 // album last.
 func sortEntries(es []*entry) {
 	sort.SliceStable(es, func(i, j int) bool { return es[i].order < es[j].order })
-}
-
-// peaksOf reads src to its end and returns how loud each of peakCount
-// stretches of it is, as [shape] scales it, for the seek bar to draw.
-func peaksOf(src audio.Seeker) []float32 {
-	total := src.Len()
-	if total <= 0 {
-		return nil
-	}
-	power := make([]float64, peakCount)
-	counts := make([]int, peakCount)
-	per := max(total/peakCount, 1)
-	buf := make([]float32, 2*4096)
-	var at int64
-	for {
-		n, err := src.Read(buf)
-		for i := range n {
-			b := min(int((at+int64(i))/per), peakCount-1)
-			l, r := float64(buf[2*i]), float64(buf[2*i+1])
-			power[b] += (l*l + r*r) / 2
-			counts[b]++
-		}
-		at += int64(n)
-		if err != nil || n == 0 {
-			break
-		}
-	}
-	for i := range power {
-		power[i] /= float64(max(counts[i], 1))
-	}
-	return shape(power)
 }
 
 // shape turns each stretch's power, its mean square, into a height

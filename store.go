@@ -17,6 +17,8 @@ type saved struct {
 	Volume  *float32 `json:",omitempty"`
 	Shuffle bool
 	Repeat  Repeat
+	// GainMode is nil until it is first set: album gain.
+	GainMode *GainMode `json:",omitempty"`
 	// EQ is nil until the equalizer is first set.
 	EQ *EQ `json:",omitempty"`
 }
