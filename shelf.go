@@ -397,8 +397,22 @@ func (s *shelf) Layout(c gunim.Constraints, _ gunim.Frame, _ gunim.Children) geo
 	return s.size
 }
 
-// Step implements [gunim.Animator].
-func (s *shelf) Step(dt time.Duration) bool { return s.Group.Step(dt) }
+// Step implements [gunim.Animator]: the row of the list playing has
+// bars to move.
+func (s *shelf) Step(dt time.Duration) bool {
+	return s.Group.Step(dt) || s.lib.state.Current != 0 && s.lib.root.meter.active
+}
+
+// playing says whether row r is the list a track plays from.
+func (s *shelf) playing(r shelfRow) bool {
+	st := s.lib.state
+	switch r.kind {
+	case shelfAll, shelfQueue, shelfPlaylist, shelfFolder:
+		return st.Current != 0 && r.list == st.From
+	case shelfCaption, shelfNewPlaylist, shelfAddFolder, shelfAddFiles:
+	}
+	return false
+}
 
 // Paint implements [gunim.Node].
 func (s *shelf) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, _ gunim.Children) {
@@ -439,6 +453,14 @@ func (s *shelf) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, _ gunim.Ch
 		textX := tile.Max.X + 12
 		room := row.Max.X - 12 - textX
 		title := faded(ink, 0.92*grow)
+		if s.playing(r) {
+			// The list playing shows it, as its track's row does.
+			accent := s.lib.root.bg.accent.Value()
+			p.RRect(row, 12, paint.Solid(faded(accent, 0.12*grow)))
+			paintBars(p, s.lib.root.meter, geom.Pt(row.Max.X-28, y+rowH/2), faded(accent, grow))
+			room -= 36
+			title = faded(accent, grow)
+		}
 		sub := r.sub
 		if aimed > 0.5 {
 			sub = s.goal

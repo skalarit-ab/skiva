@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -364,5 +365,69 @@ func TestARowsMenuAddsItsTrackToAPlaylistOrTakesItOff(t *testing.T) {
 	}
 	if got[1] != (RemoveFromPlaylist{ID: "p", At: 1}) {
 		t.Fatalf("Remove sent %v, want the second place taken off", got[1])
+	}
+}
+
+func TestARowTakenOffAPlaylistFadesAndTheRowsBelowGlideUp(t *testing.T) {
+	s := withPlaylist(library4())
+	w, root, run := stage(t, geom.Sz(1100, 720), s)
+	tap(w, run, geom.Pt(120, shelfRowY(root, "p:p")))
+	run(40)
+	l := root.lib.list
+	s.Playlists = []Playlist{{ID: "p", Name: "Mix", Tracks: []int{1, 3}}}
+	if err := w.Client().Publish(playerTopic, s); err != nil {
+		t.Fatal(err)
+	}
+	run(1)
+	if len(l.leaving) != 1 || l.leaving[0].tr.ID != 2 {
+		t.Fatalf("leaving %v, want track 2 fading", l.leaving)
+	}
+	// Track 3, now second, starts where it was, third, and glides up
+	// a row, every frame no further from its place than the last.
+	last := float32(2)
+	for f := range 40 {
+		at := 1 + l.shift[1].Value()
+		if f == 0 && math.Abs(float64(at-2)) > 0.1 {
+			t.Fatalf("the frame track 2 went, track 3 is at row %v, want it still at 2", at)
+		}
+		if at > last+0.01 {
+			t.Fatalf("frame %d: track 3 went back down from row %v to %v", f, last, at)
+		}
+		last = at
+		run(1)
+	}
+	if math.Abs(float64(last-1)) > 0.02 {
+		t.Fatalf("after 40 frames track 3 is at row %v, want 1", last)
+	}
+	if len(l.leaving) != 0 {
+		t.Fatalf("track 2 is still fading after 40 frames")
+	}
+}
+
+func TestAfterARowIsDroppedOnlyTheRowUnderThePointerIsLit(t *testing.T) {
+	w, root, run := stage(t, geom.Sz(1100, 720), withPlaylist(library4()))
+	tap(w, run, geom.Pt(120, shelfRowY(root, "p:p")))
+	run(40)
+	list := boundsOf(t, w, run, root.lib.listScroll)
+	grip := geom.Pt(list.Max.X-30, list.Min.Y+rowH/2)
+	w.Input(input.PointerMove{Pos: grip})
+	run(10)
+	w.Input(input.PointerDown{Pos: grip, Button: input.ButtonPrimary, Clicks: 1})
+	end := grip.Add(geom.Pt(0, 2*rowH))
+	for i := 1; i <= 10; i++ {
+		w.Input(input.PointerMove{Pos: grip.Add(geom.Pt(0, float32(i)*2*rowH/10))})
+		run(1)
+	}
+	w.Input(input.PointerUp{Pos: end, Button: input.ButtonPrimary})
+	run(1)
+	l := root.lib.list
+	for i := range l.tracks {
+		want := float32(0)
+		if i == 2 {
+			want = 1
+		}
+		if math.Abs(float64(l.litOf(i)-want)) > 0.01 {
+			t.Fatalf("the frame after the drop row %d is lit %v, want %v: only the row dropped, under the pointer", i, l.litOf(i), want)
+		}
 	}
 }

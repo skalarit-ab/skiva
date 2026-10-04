@@ -404,9 +404,11 @@ func (l *library) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Children
 	}
 	// The menu button serves the shelf and the lists alike.
 	more.Place(geom.Pt(l.at.X+w-48, l.at.Y+18))
-	name.Layout(gunim.Tight(geom.Sz(max(w-48-64, 40), 36)))
+	// The name's field sits where the title is, clear of the line of
+	// tracks under it.
+	name.Layout(gunim.Tight(geom.Sz(max(w-48-64, 40), 30)))
 	if l.naming && page > 0.5 {
-		name.Place(geom.Pt(l.at.X+52, l.at.Y+18))
+		name.Place(geom.Pt(l.at.X+52, l.at.Y+14))
 	} else {
 		name.Place(away)
 	}
@@ -471,7 +473,15 @@ func (l *library) Paint(p *paint.Painter, _ gunim.Frame, box geom.Size, kids gun
 		}
 		shaped(what, 12, false).Paint(p, at.Add(geom.Pt(56, 50)), faded(ink, 0.5))
 	}
-	kids.At(0).Paint(p)
+	// The shelf fades as the list slides over it, so none of it shows
+	// through the list's rows.
+	if page > 0.001 && page < 0.999 {
+		end := p.Layer(paint.LayerOpts{Bounds: geom.Rect{Max: box.Point()}, Opacity: 1 - page})
+		kids.At(0).Paint(p)
+		end()
+	} else {
+		kids.At(0).Paint(p)
+	}
 	kids.At(1).Paint(p)
 	kids.At(2).Paint(p)
 	kids.At(3).Paint(p)
@@ -530,11 +540,23 @@ type trackList struct {
 	// from place to place, lit by aim; at is its place.
 	gap, aim *anim.Float
 	at       int
+	// fresh fades in the rows new to the list, by place, and leaving
+	// holds the rows gone from it as they fade where they were.
+	fresh   map[int]*anim.Float
+	leaving []leavingRow
+}
+
+// leavingRow is a row gone from the list, fading where it was, in
+// rows from the top.
+type leavingRow struct {
+	tr   Track
+	at   float32
+	fade *anim.Float
 }
 
 func newTrackList(r *playerRoot) *trackList {
 	t := &trackList{root: r, hot: -1, down: -1, moving: -1, lit: map[int]*anim.Float{}, shift: map[int]*anim.Float{},
-		gap: anim.NewFloat(0), aim: anim.NewFloat(0)}
+		gap: anim.NewFloat(0), aim: anim.NewFloat(0), fresh: map[int]*anim.Float{}}
 	t.Add(t.gap, t.aim)
 	return t
 }
@@ -550,13 +572,92 @@ func (t *trackList) show(ids []int, byID map[int]Track, list ListID, cur int, u 
 		for _, s := range t.shift {
 			s.Jump(0)
 		}
+		for _, l := range t.leaving {
+			t.Remove(l.fade)
+		}
+		t.leaving = nil
+		t.set(ids, byID, list, cur)
+		u.Invalidate()
+		return
 	}
+	// Each row glides from where it shows now to its new place: the
+	// rest close the gap of a row taken away, and make room for one
+	// put in, which fades in; a row taken away fades where it was.
+	was := map[int][]float32{}
+	for j, id := range t.ids {
+		at := float32(j)
+		if s := t.shift[j]; s != nil {
+			at += s.Value()
+		}
+		if j == t.moving {
+			at = (t.y - t.grab) / rowH
+		}
+		was[id] = append(was[id], at)
+	}
+	oldByID := t.byID
+	from := make([]float32, len(ids))
+	isNew := make([]bool, len(ids))
+	for i, id := range ids {
+		if q := was[id]; len(q) > 0 {
+			from[i], was[id] = q[0]-float32(i), q[1:]
+		} else {
+			isNew[i] = true
+		}
+	}
+	for id, q := range was {
+		for _, at := range q {
+			fade := anim.NewFloat(1)
+			fade.Animate(0, anim.Spring{Response: 0.3, Damping: 1})
+			t.Add(fade)
+			t.leaving = append(t.leaving, leavingRow{tr: oldByID[id], at: at, fade: fade})
+		}
+	}
+	reordered := !slices.Equal(ids, t.ids)
+	t.set(ids, byID, list, cur)
+	for i := range ids {
+		s := t.shiftOf(i)
+		s.Jump(from[i])
+		if from[i] != 0 {
+			s.Animate(0, anim.Spring{Response: 0.32, Damping: 0.86})
+		}
+		if isNew[i] && reordered {
+			a := t.fresh[i]
+			if a == nil {
+				a = anim.NewFloat(1)
+				t.fresh[i] = a
+				t.Add(a)
+			}
+			a.Jump(0)
+			a.Animate(1, anim.Spring{Response: 0.35, Damping: 1})
+		}
+	}
+	for i, s := range t.shift {
+		if i >= len(ids) {
+			s.Jump(0)
+		}
+	}
+	if reordered {
+		// The rows' lights stay with the places, and the pointer is
+		// over the row now at its place: that row lights at once, and
+		// the others go dark at once.
+		for _, a := range t.lit {
+			a.Jump(0)
+		}
+		if t.hot >= 0 && t.hot < len(ids) {
+			t.light(t.hot, true)
+			t.lit[t.hot].Jump(1)
+		}
+	}
+	u.Invalidate()
+}
+
+// set takes the list's tracks.
+func (t *trackList) set(ids []int, byID map[int]Track, list ListID, cur int) {
 	t.ids, t.byID, t.list, t.cur = ids, byID, list, cur
 	t.tracks = t.tracks[:0]
 	for _, id := range ids {
 		t.tracks = append(t.tracks, byID[id])
 	}
-	u.Invalidate()
 }
 
 // light lights row i, or dims it.
@@ -587,7 +688,15 @@ func (t *trackList) shiftOf(i int) *anim.Float {
 
 // Step implements [gunim.Animator]: the row playing has bars to move.
 func (t *trackList) Step(dt time.Duration) bool {
-	return t.Group.Step(dt) || t.cur != 0 && t.root.meter.active
+	moving := t.Group.Step(dt)
+	t.leaving = slices.DeleteFunc(t.leaving, func(l leavingRow) bool {
+		if l.fade.Value() < 0.01 && !l.fade.Active() {
+			t.Remove(l.fade)
+			return true
+		}
+		return false
+	})
+	return moving || t.cur != 0 && t.root.meter.active
 }
 
 func (t *trackList) rowAt(p geom.Point) int {
@@ -771,24 +880,19 @@ func (t *trackList) drag(y float32) {
 // drop lets the row moving go where it is, and tells the application.
 func (t *trackList) drop(u *gunim.UI) {
 	from, to := t.moving, t.to
-	t.moving, t.down = -1, -1
-	// The row lands where it was let go, and the others hold where they
-	// made way, so the list shows its new order at once.
-	land := t.y - t.grab - float32(to)*rowH
-	for _, s := range t.shift {
-		s.Jump(0)
-	}
-	if from == to {
-		t.shiftOf(to).Jump(land / rowH)
-		t.shiftOf(to).Animate(0, anim.Spring{Response: 0.3, Damping: 0.8})
-		return
-	}
+	// The list shows its new order at once, each row gliding from
+	// where it shows: the row let go from under the pointer, and the
+	// others from where they made way. The pointer is over the row
+	// let go, which lights.
 	ids := slices.Clone(t.ids)
 	id := ids[from]
 	ids = slices.Insert(slices.Delete(ids, from, from+1), to, id)
+	t.hot = to
 	t.show(ids, t.byID, t.list, t.cur, u)
-	t.shiftOf(to).Jump(land / rowH)
-	t.shiftOf(to).Animate(0, anim.Spring{Response: 0.3, Damping: 0.8})
+	t.moving, t.down = -1, -1
+	if from == to {
+		return
+	}
 	u.Cue(gunim.CueTick, t)
 	if s := string(t.list); strings.HasPrefix(s, "p:") {
 		u.Send(t, MoveInPlaylist{ID: s[2:], From: from, To: to})
@@ -857,13 +961,11 @@ func (t *trackList) Layout(c gunim.Constraints, _ gunim.Frame, _ gunim.Children)
 // Paint implements [gunim.Node].
 func (t *trackList) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, _ gunim.Children) {
 	defer t.paintAim(p, box)
+	for _, l := range t.leaving {
+		t.paintRow(p, f, l.tr, 0, l.at*rowH, box, false, l.fade.Value())
+	}
 	if len(t.tracks) == 0 {
-		msg := "Tracks added show up here"
-		if t.editable() {
-			msg = "Right-click or hold a track to add it here"
-		}
-		run := shaped(msg, 14, false)
-		run.Paint(p, geom.Pt((box.W-run.Advance)/2, 40), faded(ink, 0.45))
+		t.paintEmpty(p, box)
 		return
 	}
 	// Only the rows in view are drawn, for a library of thousands.
@@ -878,10 +980,49 @@ func (t *trackList) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, _ guni
 		if s := t.shift[i]; s != nil {
 			y += s.Value() * rowH
 		}
-		t.paintRow(p, f, i, y, box, false)
+		alpha := float32(1)
+		if a := t.fresh[i]; a != nil {
+			alpha = a.Value()
+		}
+		t.paintRow(p, f, t.tracks[i], t.litOf(i), y, box, false, alpha)
 	}
 	if t.moving >= 0 {
-		t.paintRow(p, f, t.moving, t.y-t.grab, box, true)
+		t.paintRow(p, f, t.tracks[t.moving], 1, t.y-t.grab, box, true, 1)
+	}
+}
+
+// litOf returns how lit row i is.
+func (t *trackList) litOf(i int) float32 {
+	if a := t.lit[i]; a != nil {
+		return a.Value()
+	}
+	return 0
+}
+
+// paintEmpty says how to fill an empty list.
+func (t *trackList) paintEmpty(p *paint.Painter, box geom.Size) {
+	lines := []string{"Tracks added show up here"}
+	switch {
+	case t.list == QueueList:
+		lines = []string{"Nothing up next", "Right-click a track, and pick", "Play next or Add to Up next.", "Or drop tracks or files here."}
+	case t.editable():
+		lines = []string{"This playlist is empty", "In All tracks, right-click a track", "and pick this playlist.", "Or drop music files here."}
+	}
+	if t.root.narrow && len(lines) > 1 {
+		lines[1] = strings.Replace(lines[1], "right-click", "hold", 1)
+	}
+	y := float32(36)
+	for i, line := range lines {
+		size, bold, alpha := float32(13), false, float32(0.5)
+		if i == 0 {
+			size, bold, alpha = 16, true, 0.8
+		}
+		run := shaped(line, size, bold)
+		run.Paint(p, geom.Pt((box.W-run.Advance)/2, y), faded(ink, alpha))
+		y += size + 10
+		if i == 0 {
+			y += 6
+		}
 	}
 }
 
@@ -908,29 +1049,38 @@ func (t *trackList) paintAim(p *paint.Painter, box geom.Size) {
 }
 
 // paintRow draws row i at y, lifted as it is moved.
-func (t *trackList) paintRow(p *paint.Painter, f gunim.Frame, i int, y float32, box geom.Size, lifted bool) {
-	tr := t.tracks[i]
+// paintRow draws track tr's row at y, lit by hot, lifted as it is
+// moved, at alpha as it fades in or out.
+func (t *trackList) paintRow(p *paint.Painter, f gunim.Frame, tr Track, hot, y float32, box geom.Size, lifted bool, alpha float32) {
+	if alpha < 0.01 {
+		return
+	}
 	row := geom.Rc(10, y+2, box.W-20, rowH-4)
 	playing := tr.ID == t.cur
+	if alpha < 0.999 {
+		// Fading in or out, it shrinks a little toward its middle.
+		mid := row.Min.Add(geom.Pt(row.Size().W/2, row.Size().H/2))
+		defer p.Push(paint.Scale(0.92+0.08*alpha, mid))()
+	}
 	if lifted {
 		p.ShadowRRect(row, 12, paint.Solid(mix(night, ink, 0.12)),
 			paint.Shadow{Blur: 18, Offset: geom.Pt(0, 6), Color: faded(night, 0.6)})
 	}
-	if a := t.lit[i]; a != nil && a.Value() > 0.01 {
-		p.RRect(row, 12, paint.Solid(faded(ink, 0.07*a.Value())))
+	if hot > 0.01 {
+		p.RRect(row, 12, paint.Solid(faded(ink, 0.07*hot*alpha)))
 	}
 	if playing {
-		p.RRect(row, 12, paint.Solid(faded(tr.Accent, 0.14)))
+		p.RRect(row, 12, paint.Solid(faded(tr.Accent, 0.14*alpha)))
 	}
 	cover := geom.Rc(row.Min.X+8, y+(rowH-44)/2, 44, 44)
 	if tr.Cover != nil {
-		p.Image(tr.Cover, cover, paint.ImageOpts{Radius: 8, Opacity: 1})
+		p.Image(tr.Cover, cover, paint.ImageOpts{Radius: 8, Opacity: alpha})
 	}
 	textX := cover.Max.X + 12
 	room := row.Max.X - 64 - textX
-	title := faded(ink, 0.92)
+	title := faded(ink, 0.92*alpha)
 	if playing {
-		title = tr.Accent
+		title = faded(tr.Accent, alpha)
 	}
 	paintFit(p, tr.Title, 15, true, geom.Pt(textX, y+12), room, title)
 	sub := tr.Artist
@@ -940,11 +1090,7 @@ func (t *trackList) paintRow(p *paint.Painter, f gunim.Frame, i int, y float32, 
 		}
 		sub += tr.Album
 	}
-	paintFit(p, sub, 12, false, geom.Pt(textX, y+33), room, faded(ink, 0.5))
-	hot := float32(0)
-	if a := t.lit[i]; a != nil {
-		hot = a.Value()
-	}
+	paintFit(p, sub, 12, false, geom.Pt(textX, y+33), room, faded(ink, 0.5*alpha))
 	if t.editable() && (hot > 0.01 || lifted) {
 		// A playlist's row shows its grip as the pointer comes over it.
 		if lifted {
@@ -955,22 +1101,21 @@ func (t *trackList) paintRow(p *paint.Painter, f gunim.Frame, i int, y float32, 
 		return
 	}
 	if playing {
-		t.paintBars(p, geom.Pt(row.Max.X-34, y+rowH/2), tr)
+		paintBars(p, t.root.meter, geom.Pt(row.Max.X-34, y+rowH/2), faded(tr.Accent, alpha))
 	} else if tr.Length > 0 {
 		run := shaped(clock(tr.Length), 12, false)
-		run.Paint(p, geom.Pt(row.Max.X-12-run.Advance, y+22), faded(ink, 0.45))
+		run.Paint(p, geom.Pt(row.Max.X-12-run.Advance, y+22), faded(ink, 0.45*alpha))
 	}
 }
 
 // paintBars draws three little bars moving with the music, low, middle
-// and high, centred on mid.
-func (t *trackList) paintBars(p *paint.Painter, mid geom.Point, tr Track) {
-	m := t.root.meter
+// and high, centred on mid, in c.
+func paintBars(p *paint.Painter, m *meter, mid geom.Point, c color.NRGBA) {
 	for i, band := range []int{1, bandCount / 3, 2 * bandCount / 3} {
 		v := m.bands[band]
 		h := 4 + 16*v
 		x := mid.X - 9 + float32(i)*7
-		p.RRect(geom.Rc(x, mid.Y+10-h, 4, h), 2, paint.Solid(tr.Accent))
+		p.RRect(geom.Rc(x, mid.Y+10-h, 4, h), 2, paint.Solid(c))
 	}
 }
 
