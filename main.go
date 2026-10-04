@@ -12,8 +12,12 @@
 //	go run ./example/music -dir ~/Music
 //
 // The player always has four songs made in code, so it has something
-// to play anywhere. -dir adds a folder's MP3, FLAC, Ogg Vorbis and WAV
-// files, with their tags and covers.
+// to play anywhere. The library follows folders of MP3, FLAC, Ogg
+// Vorbis and WAV files, with their tags and covers, as files come and
+// go: the user's music folder from the first run, folders added from
+// the library, and the one -dir names. Files can be added one by one,
+// and gathered into playlists. The library is kept in the user's
+// settings, or in the file -state names.
 //
 // Keys: Space plays and pauses, Left and Right seek, Up and Down set
 // the volume, N and P skip, S shuffles, R repeats.
@@ -39,7 +43,8 @@ import (
 )
 
 func main() {
-	dir := flag.String("dir", defaultDir(), "a folder of music to add to the library")
+	dir := flag.String("dir", "", "a folder of music for the library to follow")
+	state := flag.String("state", stateFile(), "the file the library is kept in; empty keeps nothing")
 	play := flag.Bool("play", false, "start playing as the window opens")
 	track := flag.Int("track", 1, "the track -play starts with, counted from 1")
 	at := flag.Duration("at", 0, "how far into the track -play starts")
@@ -48,13 +53,15 @@ func main() {
 	after := flag.Duration("after", 2*time.Second, "how long -shot waits")
 	size := flag.String("size", "1100x720", "the window's size, as 400x820 for one shaped like a phone")
 	library := flag.Bool("library", false, "open with the library over the track playing, on a narrow window")
+	list := flag.String("list", "", "open the library on the list of this name, as a playlist's, for -shot")
 	flag.Parse()
 	var w, h float32
 	if _, err := fmt.Sscanf(*size, "%gx%g", &w, &h); err != nil || w <= 0 || h <= 0 {
 		log.Fatalf("music: -size %q: want a width and a height, as 400x820", *size)
 	}
 	start := startAt{on: *play, track: *track, at: *at}
-	if err := run(*dir, start, *library, *runFor, *shot, *after, geom.Sz(w, h)); err != nil {
+	lib := setup{file: *state, dir: *dir, home: defaultDir()}
+	if err := run(lib, start, *library, *list, *runFor, *shot, *after, geom.Sz(w, h)); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -79,7 +86,7 @@ type startAt struct {
 	at    time.Duration
 }
 
-func run(dir string, play startAt, library bool, runFor time.Duration, shot string, after time.Duration, size geom.Size) error {
+func run(at setup, play startAt, library bool, list string, runFor time.Duration, shot string, after time.Duration, size geom.Size) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	if runFor > 0 {
@@ -97,7 +104,7 @@ func run(dir string, play startAt, library bool, runFor time.Duration, shot stri
 		if err != nil {
 			return fmt.Errorf("music: %w", err)
 		}
-		registerViews(w, d, library)
+		registerViews(w, d, library, list)
 		c := w.Client()
 		if shot != "" {
 			go func() {
@@ -112,7 +119,7 @@ func run(dir string, play startAt, library bool, runFor time.Duration, shot stri
 				c.Close()
 			}()
 		}
-		return serve(ctx, c, d, dir, play, a.SetNowPlaying)
+		return serve(ctx, c, d, at, play, a.SetNowPlaying)
 	})
 	if errors.Is(err, driver.ErrNoDriver) {
 		log.Print("gunim has no driver for this operating system yet")

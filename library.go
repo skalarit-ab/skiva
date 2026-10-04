@@ -2,10 +2,10 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	_ "image/jpeg" // covers in tags are JPEG or PNG
 	_ "image/png"
-	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -32,6 +32,11 @@ type entry struct {
 	Track
 	path string
 	song *song
+	// key names the track for good, across runs: its file, or the demo
+	// song it is.
+	key string
+	// roots holds the folders followed it lies in.
+	roots map[string]bool
 	// order sorts the library: by artist, album, disc and track.
 	order string
 }
@@ -67,6 +72,7 @@ func demoEntries() []*entry {
 				Cover:  paint.NewImage(cover), Accent: accent, Glow: glow,
 			},
 			song:  s,
+			key:   fmt.Sprintf("demo:%d", i+1),
 			order: "￿" + string(rune('a'+i)),
 		}
 		e.Peaks = s.peaks()
@@ -78,35 +84,8 @@ func demoEntries() []*entry {
 // audioExts are the files the library takes.
 var audioExts = map[string]bool{".mp3": true, ".flac": true, ".ogg": true, ".oga": true, ".wav": true}
 
-// maxTracks is as many files as the library reads from a folder.
+// maxTracks is as many files as the library follows in a folder.
 const maxTracks = 5000
-
-// scan reads the tracks in dir and below, sending each as it is read.
-func scan(dir string, found func(*entry)) {
-	n := 0
-	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // a folder it cannot read is skipped
-		}
-		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") && path != dir {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !audioExts[strings.ToLower(filepath.Ext(path))] {
-			return nil
-		}
-		if e := readEntry(path); e != nil {
-			found(e)
-			n++
-		}
-		if n >= maxTracks {
-			return filepath.SkipAll
-		}
-		return nil
-	})
-}
 
 // readEntry reads a file's tags, cover and length, or returns nil for
 // a file it cannot play.
@@ -116,7 +95,7 @@ func readEntry(path string) *entry {
 		return nil
 	}
 	defer func() { _ = f.Close() }()
-	e := &entry{path: path}
+	e := &entry{path: path, key: path}
 	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	e.Title, e.Album = name, filepath.Base(filepath.Dir(path))
 	var art image.Image

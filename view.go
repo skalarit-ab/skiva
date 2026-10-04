@@ -17,13 +17,14 @@ import (
 
 // registerViews is the window half: the player's view, drawing from d
 // as it plays.
-func registerViews(w *gunim.Window, d *deck, openLibrary bool) {
+func registerViews(w *gunim.Window, d *deck, openLibrary bool, list string) {
 	gunim.RegisterView(w, "player",
 		func(Player) *playerRoot {
 			r := newPlayerRoot(d)
 			if openLibrary {
 				r.sheet.Jump(1)
 			}
+			r.lib.want = list
 			return r
 		},
 		func(r *playerRoot, s Player, u *gunim.UI) { r.show(s, u) })
@@ -272,7 +273,18 @@ func (r *playerRoot) Handle(e input.Event, u *gunim.UI) bool {
 	return false
 }
 
+// isMedia says whether k is one of the media keys, which work the
+// player wherever the focus is.
+func isMedia(k input.Key) bool {
+	return k == input.KeyMediaPlayPause || k == input.KeyMediaPlay || k == input.KeyMediaPause ||
+		k == input.KeyMediaStop || k == input.KeyMediaNext || k == input.KeyMediaPrevious
+}
+
 func (r *playerRoot) key(k input.KeyPress, u *gunim.UI) bool {
+	// Keys typed into a field, as a playlist's name, are the field's.
+	if t, ok := u.Focused().(interface{ TakesText() bool }); ok && t.TakesText() && !isMedia(k.Key) {
+		return false
+	}
 	at, _ := r.now.d.position()
 	switch k.Key {
 	case input.KeySpace, input.KeyK, input.KeyMediaPlayPause:

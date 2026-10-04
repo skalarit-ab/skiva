@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"math"
 	"testing"
 	"time"
@@ -14,11 +15,8 @@ import (
 // newTestApp returns the application half with the demo songs, playing
 // through a mixer no speaker reads.
 func newTestApp() *app {
-	a := &app{d: newDeck(audio.NewMixer()), entries: map[int]*entry{}, peaksDone: make(chan peaksRead, 4)}
+	a := newApp(context.Background(), newDeck(audio.NewMixer()), "")
 	a.rng = nil
-	for _, e := range demoEntries() {
-		a.add(e)
-	}
 	return a
 }
 
@@ -170,6 +168,7 @@ func library4() Player {
 	for i, e := range demoEntries() {
 		e.ID = i + 1
 		s.Tracks = append(s.Tracks, e.Track)
+		s.Library = append(s.Library, e.ID)
 	}
 	s.Volume = 0.8
 	return s
@@ -177,7 +176,9 @@ func library4() Player {
 
 func TestTheWindowSendsWhatIsClicked(t *testing.T) {
 	w, root, run := stage(t, geom.Sz(1100, 720), library4())
-	// The third row of the library.
+	// The shelf's first row opens the whole library; then its third row.
+	tap(w, run, geom.Pt(120, headH+rowH/2))
+	run(40)
 	tap(w, run, geom.Pt(120, headH+2*rowH+rowH/2))
 	play := boundsOf(t, w, run, root.now.play)
 	tap(w, run, play.Min.Add(geom.Pt(play.Size().W/2, play.Size().H/2)))
@@ -225,6 +226,8 @@ func TestOnAPhoneTheLibraryIsASheet(t *testing.T) {
 		t.Fatalf("a second after its button, the sheet is %v open", v)
 	}
 	lib := boundsOf(t, w, run, root.lib)
+	tap(w, run, geom.Pt(120, lib.Min.Y+headH+rowH/2))
+	run(40)
 	tap(w, run, geom.Pt(120, lib.Min.Y+headH+rowH/2))
 	if got := intents(w); len(got) != 1 || got[0] != (PlayTrack{ID: 1}) {
 		t.Fatalf("a tap on the sheet's first row sent %v, want PlayTrack 1", got)
