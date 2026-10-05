@@ -121,7 +121,7 @@ func run(at setup, play startAt, library bool, list string, eqOpen, infoOpen boo
 	if spk, err := speaker.Open(mix, speaker.Options{Name: "gunim music", Latency: seenLatency}); err != nil {
 		log.Printf("music: no sound: %v", err)
 	} else {
-		d.spk = spk
+		d.setSpeaker(spk)
 	}
 	err := gunim.Main(ctx, func(a *gunim.App) error {
 		// The player draws the whole window, its title bar over it, as

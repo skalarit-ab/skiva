@@ -319,6 +319,9 @@ type app struct {
 	upNext      *entry
 	upFromQueue bool
 	upGain      float64
+	// turning says the voice has turned to upNext, which the speakers
+	// have yet to reach.
+	turning     bool
 	shuffleFor  int
 	shuffleNext int
 	// eqBoost is the most the equalizer lifts any frequency, in
@@ -567,6 +570,8 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 				if cur := a.entries[a.Current]; cur != nil && albumKey(cur) == albumKey(e) {
 					a.applyGain()
 				}
+				// The track to follow may play at a gain just learned.
+				a.prepareNext()
 			}
 		case <-ended:
 			a.ended()
@@ -574,12 +579,14 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 			// The voice turned to the track queued, without a gap; the
 			// player moves on to it as the speakers reach it.
 			turnLater, turnVoice = time.After(a.d.lag()), a.voice
+			a.turning = true
 			continue
 		case <-turnLater:
 			turnLater = nil
 			if a.voice == turnVoice {
 				a.turned()
 			}
+			a.turning = false
 		case ev, ok := <-c.Intents():
 			if !ok {
 				return c.Err()
@@ -1229,13 +1236,10 @@ func (a *app) start(id int) {
 		log.Printf("music: %s: %v", e.Title, err)
 		return
 	}
-	if e.an == nil {
-		a.z.want(e, true)
-	}
 	// The track starts at its own gain, worked out for the list it
 	// plays from; the track before fades out at its own.
 	a.voice = a.d.play(src, closer, false, a.gainFor(e))
-	a.upNext = nil
+	a.upNext, a.turning = nil, false
 	// The list playing goes on from its track played last.
 	if slices.Contains(a.list(a.From), id) {
 		a.listAt = id
@@ -1291,11 +1295,8 @@ func (a *app) takeUp() {
 	if err != nil {
 		return
 	}
-	if e.an == nil {
-		a.z.want(e, true)
-	}
 	a.voice = a.d.play(src, closer, true, a.gainFor(e))
-	a.upNext = nil
+	a.upNext, a.turning = nil, false
 	if slices.Contains(a.list(a.From), e.ID) {
 		a.listAt = e.ID
 	}
@@ -1307,16 +1308,15 @@ func (a *app) takeUp() {
 }
 
 // learn gives e what was kept of it from a run before, where its file
-// is unchanged since, or else asks for it to be read through.
+// is unchanged since. A track not kept is read through once the player
+// needs it; see scanAhead.
 func (a *app) learn(e *entry) {
 	if e == nil || e.an != nil {
 		return
 	}
 	if an, ok := a.analyses[e.key]; ok && an.fresh(e.path) {
 		e.analyzed(an)
-		return
 	}
-	a.z.want(e, false)
 }
 
 // gainOf returns the gain e plays at, in decibels, what it follows,
@@ -1333,9 +1333,7 @@ func (a *app) gainOf(e *entry) (db float64, by GainSource, album, peak float64) 
 	if e.an == nil {
 		return 0, GainMeasuring, 0, peak
 	}
-	// Album gain fits an album played in order; shuffled, or from a
-	// list of many albums' tracks, each track evens out on its own.
-	if a.GainMode == GainAlbum && !a.Shuffle && (a.From == AllTracks || strings.HasPrefix(string(a.From), "f:")) {
+	if a.albumGain() {
 		if lufs, p, ok := a.albumLoudness(e); ok {
 			peak = dB(float64(max(p, 1e-6)))
 			return min(targetLUFS-lufs, -peak), GainByAlbum, lufs, peak
@@ -1346,6 +1344,13 @@ func (a *app) gainOf(e *entry) (db float64, by GainSource, album, peak float64) 
 	}
 	// A track lifted plays no louder than its peak lets it, unclipped.
 	return min(targetLUFS-e.an.LUFS, -peak), GainByTrack, 0, peak
+}
+
+// albumGain says whether tracks play at their album's gain. Album gain
+// fits an album played in order; shuffled, or from a list of many
+// albums' tracks, each track evens out on its own.
+func (a *app) albumGain() bool {
+	return a.GainMode == GainAlbum && !a.Shuffle && (a.From == AllTracks || strings.HasPrefix(string(a.From), "f:"))
 }
 
 // albumKey names e's album: its title, in its folder.
@@ -1422,9 +1427,16 @@ func (a *app) peekNext() (e *entry, fromQueue bool) {
 // what follows, or its gain, has changed since.
 func (a *app) prepareNext() {
 	if a.voice == nil || a.Current == 0 {
+		a.z.want(nil)
 		return
 	}
 	e, fromQueue := a.peekNext()
+	a.scanAhead(e)
+	// The voice has turned to the track queued, which the speakers
+	// have yet to reach: it is the one playing, and stays.
+	if a.turning {
+		return
+	}
 	var gain float64
 	if e != nil {
 		db, _, _, headroom := a.gainAll(e)
@@ -1447,11 +1459,42 @@ func (a *app) prepareNext() {
 	a.d.queue(src, closer, gain)
 }
 
+// scanAhead has the tracks the gain needs read through, where no
+// analysis is kept of them: the track playing, then the track to
+// follow it, and, where album gain applies, the rest of their albums,
+// whose loudness the album's gain sums. The rest of the library is read
+// as it comes to play, so a player stopped reads nothing.
+func (a *app) scanAhead(next *entry) {
+	var want []*entry
+	add := func(e *entry) {
+		if e != nil && e.an == nil && !slices.Contains(want, e) {
+			want = append(want, e)
+		}
+	}
+	cur := a.entries[a.Current]
+	add(cur)
+	add(next)
+	if a.albumGain() {
+		for _, e := range []*entry{cur, next} {
+			if e == nil {
+				continue
+			}
+			key := albumKey(e)
+			for _, o := range a.order {
+				if albumKey(o) == key {
+					add(o)
+				}
+			}
+		}
+	}
+	a.z.want(want)
+}
+
 // turned moves the player on to the track queued, which the speakers
 // now play, run on from the last without a gap.
 func (a *app) turned() {
 	e, fromQueue := a.upNext, a.upFromQueue
-	a.upNext = nil
+	a.upNext, a.turning = nil, false
 	a.d.turned()
 	if e == nil {
 		return
@@ -1472,9 +1515,6 @@ func (a *app) turned() {
 	a.Current = e.ID
 	a.Starts++
 	a.remember(e)
-	if e.an == nil {
-		a.z.want(e, true)
-	}
 	a.d.setGain(a.gainFor(e), false)
 	a.prepareNext()
 }
@@ -1517,6 +1557,7 @@ func (a *app) ended() {
 	a.Current = 0
 	a.d.stop()
 	a.refresh()
+	a.prepareNext()
 }
 
 // playNext plays what comes next: the first track on Up next, or the

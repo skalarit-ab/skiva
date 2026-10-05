@@ -77,33 +77,24 @@ func analyze(src audio.Seeker) analysis {
 	return a
 }
 
-// analyzer reads tracks through in the background, one at a time: the
-// track wanted now first, then the rest of the library as it comes.
+// analyzer reads tracks through in the background, one at a time, as
+// the player needs them: the tracks it asks for last, most wanted first.
 type analyzer struct {
-	mu     sync.Mutex
-	queue  []*entry
-	queued map[string]bool
-	wake   chan struct{}
-	out    chan analyzed
+	mu    sync.Mutex
+	queue []*entry
+	wake  chan struct{}
+	out   chan analyzed
 }
 
 func newAnalyzer() *analyzer {
-	return &analyzer{queued: map[string]bool{}, wake: make(chan struct{}, 1), out: make(chan analyzed, 16)}
+	return &analyzer{wake: make(chan struct{}, 1), out: make(chan analyzed, 16)}
 }
 
-// want queues e to read, first with now.
-func (z *analyzer) want(e *entry, now bool) {
+// want sets the tracks to read, most wanted first, in place of those
+// asked for before and not read yet. Nil reads nothing more.
+func (z *analyzer) want(es []*entry) {
 	z.mu.Lock()
-	switch {
-	case now:
-		z.queue = append([]*entry{e}, z.queue...)
-	case z.queued[e.key]:
-		z.mu.Unlock()
-		return
-	default:
-		z.queue = append(z.queue, e)
-	}
-	z.queued[e.key] = true
+	z.queue = es
 	z.mu.Unlock()
 	select {
 	case z.wake <- struct{}{}:

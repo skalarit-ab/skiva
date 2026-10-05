@@ -25,13 +25,18 @@ type deck struct {
 	cur, next *track
 	// spk is the speaker, whose buffer the deck sets: short while the
 	// player is seen, long while it plays on unseen.
-	spk *speaker.Speaker
+	spk speakers
 	// an measures the mix, and bands holds what it measured last.
 	an *audio.Analyzer
 	// eq is the equalizer every track plays through.
 	eq *audio.EQ
 	// fading is done once the fade as the player closes has ended.
 	fading <-chan struct{}
+	// resting says the speaker is suspended, as nothing has sounded for
+	// a moment; woken counts the times it was woken, so a rest asked
+	// for before the last waking lapses.
+	resting bool
+	woken   int
 }
 
 // bandCount is how many bands of pitch the visuals draw.
@@ -59,12 +64,16 @@ type track struct {
 func (d *deck) play(src audio.Seeker, closer func(), paused bool, db float64) *audio.Voice {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.wake()
 	d.retire()
 	d.cur = &track{src: newGained(src, ratio(db)), closer: closer}
 	// A volume of zero would play at 1, as Options takes it: a muted
 	// track starts as near silent as makes no odds.
 	d.voice = d.mix.Play(d.cur.src, audio.Options{Volume: max(d.volume, 1e-6), FadeIn: 30 * time.Millisecond,
 		Paused: paused, Insert: d.eq.Insert()})
+	if paused {
+		d.rest()
+	}
 	return d.voice
 }
 
@@ -130,7 +139,9 @@ func (d *deck) turned() {
 func (d *deck) stop() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.wake()
 	d.retire()
+	d.rest()
 }
 
 // setPaused pauses or resumes the track playing.
@@ -142,7 +153,9 @@ func (d *deck) setPaused(on bool) {
 	}
 	if on {
 		d.voice.Pause()
+		d.rest()
 	} else {
+		d.wake()
 		d.voice.Resume()
 	}
 }
@@ -152,7 +165,13 @@ func (d *deck) seek(at time.Duration) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.voice != nil {
+		// The mixer marks where a seek lands as it mixes: the speaker
+		// runs a moment, paused or not, for the playhead to show it.
+		d.wake()
 		_ = d.voice.Seek(at)
+		if d.voice.Paused() {
+			d.rest()
+		}
 	}
 }
 
@@ -189,6 +208,63 @@ func (d *deck) setSeen(seen bool) {
 	} else {
 		spk.SetLatency(unseenLatency)
 	}
+}
+
+// speakers is what the deck asks of the speaker: a
+// [*speaker.Speaker], or a stand-in in tests.
+type speakers interface {
+	SetLatency(time.Duration)
+	Latency() time.Duration
+	Suspend() error
+	Resume() error
+}
+
+var _ speakers = (*speaker.Speaker)(nil)
+
+// restAfter is how long the speaker plays on once nothing sounds,
+// before it rests: long enough for a pause's or a track's fade to end,
+// and for the playhead to reach a seek.
+var restAfter = time.Second
+
+// setSpeaker gives the deck the speaker, which rests until something
+// plays.
+func (d *deck) setSpeaker(spk speakers) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.spk = spk
+	d.rest()
+}
+
+// wake starts the speaker again where it rests, and lets a rest asked
+// for lapse. A deck that sounds, or changes what it would sound, wakes
+// it: a voice stops, and a seek lands, only as the mixer runs. It runs
+// with mu held.
+func (d *deck) wake() {
+	d.woken++
+	if d.resting {
+		d.resting = false
+		_ = d.spk.Resume()
+	}
+}
+
+// rest suspends the speaker restAfter from now, unless it is woken
+// first or a voice plays then, so a player paused or stopped mixes no
+// silence and the system's sound server has nothing to play. It runs
+// with mu held.
+func (d *deck) rest() {
+	if d.spk == nil {
+		return
+	}
+	woken := d.woken
+	time.AfterFunc(restAfter, func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if d.woken != woken || d.resting || d.voice != nil && !d.voice.Paused() {
+			return
+		}
+		d.resting = true
+		_ = d.spk.Suspend()
+	})
 }
 
 // lag is how long the speaker takes to play what is mixed.
@@ -310,6 +386,7 @@ func (d *deck) fadeOut(fade time.Duration) {
 	if d.voice == nil {
 		return
 	}
+	d.wake()
 	d.voice.Stop(fade)
 	d.fading = d.voice.Done()
 }
