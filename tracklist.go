@@ -229,7 +229,7 @@ func (l *library) freeName() string {
 // startNaming puts a field in place of the open playlist's title.
 func (l *library) startNaming(name string, u *gunim.UI) {
 	l.naming = true
-	l.name.SetText(name)
+	l.name.SetText(name, u)
 	l.name.Select(0, len(name))
 	u.Focus(l.name)
 	u.Invalidate()
