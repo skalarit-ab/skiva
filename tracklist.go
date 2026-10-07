@@ -64,12 +64,12 @@ func newLibrary(r *playerRoot) *library {
 	l.shelf = newShelf(l)
 	l.shelfMenu = widget.NewContextMenu(l.shelf, nil)
 	l.shelfMenu.Prepare = l.shelf.prepare
-	l.shelfMenu.Picked = l.pick
+	l.shelfMenu.OnPick = l.pick
 	l.shelfScroll = widget.NewScroll(l.shelfMenu)
 	l.list = newTrackList(r)
 	l.listMenu = widget.NewContextMenu(l.list, nil)
 	l.listMenu.Prepare = l.list.prepare
-	l.listMenu.Picked = l.pick
+	l.listMenu.OnPick = l.pick
 	l.listScroll = widget.NewScroll(l.listMenu)
 	l.back = newIconButton(icon.ChevronLeft, 36, func(u *gunim.UI) { l.close(u) })
 	// A drag resting on the back button slides the list away, to drop
@@ -77,7 +77,7 @@ func newLibrary(r *playerRoot) *library {
 	l.back.dwell = func(u *gunim.UI) { l.close(u) }
 	l.more = newIconButton(icon.Ellipsis, 36, func(u *gunim.UI) { l.openMore(u) })
 	l.menu = widget.NewContextMenu(l.more, nil)
-	l.menu.Picked = l.pick
+	l.menu.OnPick = l.pick
 	l.name = widget.NewTextField()
 	l.name.Keys = func(k input.KeyPress, u *gunim.UI) bool {
 		switch k.Key {
@@ -309,10 +309,11 @@ func (l *library) openMore(u *gunim.UI) {
 }
 
 // pick does what the menu item i picked says.
-func (l *library) pick(i int, u *gunim.UI) {
+func (l *library) pick(i int, u *gunim.UI) gunim.Intent {
 	if i >= 0 && i < len(l.picks) && l.picks[i] != nil {
 		l.picks[i](u)
 	}
+	return nil
 }
 
 // menuItems gathers a menu's items and what each does. broken says a line goes above the next item.
