@@ -102,7 +102,7 @@ func newEQPanel(r *playerRoot) *eqPanel {
 	e.Add(e.open)
 	e.graph = newEQGraph(e)
 	e.strip = &eqStrip{eq: e, slotOf: map[int]geom.Rect{}, held: -1, hot: -1}
-	e.graphMenu = widget.NewContextMenu(e.graph)
+	e.graphMenu = widget.NewContextMenu(e.graph, nil)
 	e.graphMenu.Prepare = e.graph.prepare
 	e.graphMenu.Picked = func(i int, u *gunim.UI) {
 		if g := e.graph; i >= 0 && i < len(g.picks) && g.picks[i] != nil {
@@ -118,7 +118,7 @@ func newEQPanel(r *playerRoot) *eqPanel {
 	})
 	e.power.setLit(true)
 	e.presets = newIconButton(icon.Sparkles, 36, func(u *gunim.UI) { e.openPresets(u) })
-	e.menu = widget.NewContextMenu(e.presets)
+	e.menu = widget.NewContextMenu(e.presets, nil)
 	e.menu.Picked = func(i int, u *gunim.UI) {
 		if i >= 0 && i < len(e.picks) && e.picks[i] != nil {
 			e.picks[i](u)

@@ -345,7 +345,9 @@ func TestARowsMenuAddsItsTrackToAPlaylistOrTakesItOff(t *testing.T) {
 		if !l.list.prepare(geom.Pt(100, rowH+rowH/2), u) {
 			t.Fatal("the second row has no menu")
 		}
-		items = l.listMenu.Items
+		for _, it := range l.listMenu.Items() {
+			items = append(items, it.Label)
+		}
 		l.pick(slices.Index(items, "Mix"), u)
 		l.pick(slices.Index(items, "Remove from this playlist"), u)
 	})
@@ -353,8 +355,14 @@ func TestARowsMenuAddsItsTrackToAPlaylistOrTakesItOff(t *testing.T) {
 	if !slices.Equal(items, want) {
 		t.Fatalf("the menu holds %q, want %q", items, want)
 	}
-	if !slices.Equal(l.listMenu.Captions, []int{3}) {
-		t.Fatalf("captions %v, want Add to playlist's", l.listMenu.Captions)
+	var captions []int
+	for i, it := range l.listMenu.Items() {
+		if it.Caption {
+			captions = append(captions, i)
+		}
+	}
+	if !slices.Equal(captions, []int{3}) {
+		t.Fatalf("captions %v, want Add to playlist's", captions)
 	}
 	got := intents(w)
 	if len(got) != 2 {
