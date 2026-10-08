@@ -52,12 +52,14 @@ on a monitor still attached, and fades out with the music as it closes.
 ## On Android
 
 gunim's `gunimapk` builds the APK, and `-run` installs it on the phone
-or emulator `adb` sees and starts it. Skiva draws its own launcher icon:
+or emulator `adb` sees and starts it. Skiva draws its own launcher icon.
+`music` lets it read the phone's music, and `playback` lets it play on
+in the background, with the system's media controls:
 
 ```sh
 go run . -write-icon /tmp/skiva-icon.png
 go run github.com/marrasen/gunim/tools/gunimapk -id se.skalarit.skiva -name Skiva \
-	-icon /tmp/skiva-icon.png -permissions music -run .
+	-icon /tmp/skiva-icon.png -permissions music,playback -run .
 ```
 
 For Google Play, an `-o` ending in `.aab` writes an App Bundle, signed
@@ -65,7 +67,7 @@ with Skalarit's upload key:
 
 ```sh
 go run github.com/marrasen/gunim/tools/gunimapk -keystore ~/keys/skalarit-upload.jks -key upload \
-	-id se.skalarit.skiva -name Skiva -icon /tmp/skiva-icon.png -permissions music \
+	-id se.skalarit.skiva -name Skiva -icon /tmp/skiva-icon.png -permissions music,playback \
 	-version 0.1.0 -o /tmp/skiva.aab .
 ```
 
