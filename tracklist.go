@@ -303,6 +303,8 @@ func (l *library) openMore(u *gunim.UI) {
 		items.add("Add files…", icon.FilePlus, func(u *gunim.UI) { u.Send(l.root, AddFiles{}) })
 		items.add("Add a folder…", icon.FolderPlus, func(u *gunim.UI) { u.Send(l.root, AddFolder{}) })
 	}
+	items.line()
+	items.add("Privacy policy", icon.Shield, func(u *gunim.UI) { u.Send(l.root, ShowPrivacy{}) })
 	items.set(l.menu)
 	l.picks = items.do
 	l.menu.Open(geom.Pt(0, 40), u)
