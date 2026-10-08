@@ -60,6 +60,15 @@ go run github.com/marrasen/gunim/tools/gunimapk -id se.skalarit.skiva -name Skiv
 	-icon /tmp/skiva-icon.png -permissions music -run .
 ```
 
+For Google Play, an `-o` ending in `.aab` writes an App Bundle, signed
+with Skalarit's upload key:
+
+```sh
+go run github.com/marrasen/gunim/tools/gunimapk -keystore ~/keys/skalarit-upload.jks -key upload \
+	-id se.skalarit.skiva -name Skiva -icon /tmp/skiva-icon.png -permissions music \
+	-version 0.1.0 -o /tmp/skiva.aab .
+```
+
 ## History
 
 Skiva started as gunim's `example/music` and moved here, with its
