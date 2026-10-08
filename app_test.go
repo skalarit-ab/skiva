@@ -101,7 +101,7 @@ func TestPauseHoldsTheTrack(t *testing.T) {
 }
 
 func TestAFileWithNoTagsIsNamedForItself(t *testing.T) {
-	e := readEntry("../../audio/testdata/tone.mp3")
+	e := readEntry("testdata/tone.mp3")
 	if e == nil {
 		t.Fatal("a plain MP3 did not read")
 	}

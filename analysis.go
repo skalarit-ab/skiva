@@ -148,7 +148,7 @@ func analysisFile() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(d, "gunim-music", "analysis.json")
+	return filepath.Join(d, dirName, "analysis.json")
 }
 
 // loadAnalyses reads the analyses kept in file.

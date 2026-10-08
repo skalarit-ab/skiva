@@ -224,7 +224,7 @@ func (r *playerRoot) show(s Player, u *gunim.UI) {
 }
 
 // appName is the player's name, as its title bar shows it.
-const appName = "Music"
+const appName = "Skiva"
 
 // windowTitle is the window's title, which the taskbar and the window
 // switcher show: the track and its artist, then the player's name, or

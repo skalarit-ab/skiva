@@ -1,0 +1,5 @@
+# The program, as go build names it, and builds for Android.
+/skiva
+*.exe
+*.apk
+*.aab

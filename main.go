@@ -1,5 +1,5 @@
-// Command music is a music player, to show what gunim's audio and
-// animation do together.
+// Command skiva is Skiva, a music player made with gunim, to show what
+// its audio and animation do together.
 //
 // The track playing is a picture disc that spins while it plays and
 // runs down slowly as it pauses, ringed by bars that move with the
@@ -8,8 +8,8 @@
 // through the whole window. The seek bar is the track itself, drawn as
 // its loudness along it.
 //
-//	go run ./example/music
-//	go run ./example/music -dir ~/Music
+//	go run .
+//	go run . -dir ~/Music
 //
 // The player always has four songs made in code, so it has something
 // to play anywhere. The library follows folders of MP3, FLAC, Ogg
@@ -53,6 +53,7 @@ import (
 )
 
 func main() {
+	moveSettings()
 	dir := flag.String("dir", "", "a folder of music for the library to follow")
 	state := flag.String("state", stateFile(), "the file the library is kept in; empty keeps nothing")
 	play := flag.Bool("play", false, "start playing as the window opens")
@@ -118,7 +119,7 @@ func run(at setup, play startAt, library bool, list string, eqOpen, infoOpen boo
 	// The player works a little further ahead than a game would: its
 	// buttons still answer at once, and the music rides out a busy
 	// moment.
-	if spk, err := speaker.Open(mix, speaker.Options{Name: "gunim music", Latency: seenLatency}); err != nil {
+	if spk, err := speaker.Open(mix, speaker.Options{Name: appName, Latency: seenLatency}); err != nil {
 		log.Printf("music: no sound: %v", err)
 	} else {
 		d.setSpeaker(spk)

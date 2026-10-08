@@ -18,7 +18,7 @@ import (
 // copyTone puts the test tone at path, as a file changed long ago.
 func copyTone(t *testing.T, path string) {
 	t.Helper()
-	b, err := os.ReadFile("../../audio/testdata/tone.mp3")
+	b, err := os.ReadFile("testdata/tone.mp3")
 	if err != nil {
 		t.Fatal(err)
 	}

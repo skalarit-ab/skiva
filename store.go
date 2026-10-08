@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -52,7 +53,32 @@ func stateFile() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(d, "gunim-music", "library.json")
+	return filepath.Join(d, dirName, "library.json")
+}
+
+// dirName names the folders Skiva keeps its library in, in the user's
+// settings, and its analyses in, in the user's cache.
+const dirName = "skiva"
+
+// moveSettings moves the library and the analyses to dirName from
+// where the player kept them while it was gunim's music example, the
+// first time it runs under its own name.
+func moveSettings() {
+	for _, dir := range []func() (string, error){os.UserConfigDir, os.UserCacheDir} {
+		d, err := dir()
+		if err != nil {
+			continue
+		}
+		old, now := filepath.Join(d, "gunim-music"), filepath.Join(d, dirName)
+		if _, err := os.Stat(now); err == nil {
+			continue
+		}
+		if _, err := os.Stat(old); err == nil {
+			if err := os.Rename(old, now); err != nil {
+				log.Printf("skiva: moving the settings from %s: %v", old, err)
+			}
+		}
+	}
 }
 
 // loadSaved reads the library kept in file, and reports whether there
