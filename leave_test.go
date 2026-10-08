@@ -51,3 +51,20 @@ func TestAddAFolderWithNoChooserAsksLeaveForTheMusicFolder(t *testing.T) {
 		t.Fatal("Add a folder, with no chooser, asked nothing")
 	}
 }
+
+func TestThePrivacyPolicyOpensInTheBrowser(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := newApp(ctx, newDeck(audio.NewMixer()), "")
+	opened := make(chan string, 1)
+	a.openLink = func(url string) error { opened <- url; return nil }
+	a.handle(ShowPrivacy{})
+	select {
+	case url := <-opened:
+		if url != "https://skalarit-ab.github.io/skiva/privacy.html" {
+			t.Fatalf("opened %s, want the policy Google Play knows", url)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the privacy policy never opened")
+	}
+}

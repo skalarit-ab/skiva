@@ -159,6 +159,8 @@ type (
 	// AddFiles asks, with the system's dialog, for files to add to a
 	// playlist, or to the library where Playlist is empty.
 	AddFiles struct{ Playlist string }
+	// ShowPrivacy opens Skiva's privacy policy in the browser.
+	ShowPrivacy struct{}
 	// NewPlaylist makes a playlist, with tracks or none, and files, as
 	// dropped on it. The window picks its ID, so it can open the
 	// playlist at once.
@@ -351,7 +353,9 @@ type app struct {
 	// choose shows the system's dialog for choosing files, and chosen
 	// carries what was chosen.
 	choose func(driver.ChooseOptions) ([]string, error)
-	chosen chan chosen
+	// openLink opens a web page in the system's browser.
+	openLink func(url string) error
+	chosen   chan chosen
 	// home is the user's music folder, askMusic asks the user for
 	// leave to read their music, and granted carries their answer.
 	home     string
@@ -427,6 +431,7 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 	}
 	go a.z.run(ctx.Done())
 	a.choose = func(o driver.ChooseOptions) ([]string, error) { return c.ChooseFiles(ctx, o) }
+	a.openLink = c.OpenLink
 	a.home, a.askMusic, a.placement = at.home, at.ask, at.placement
 	kept, ok := loadSaved(at.file)
 	a.kept = kept
@@ -1152,6 +1157,14 @@ func (a *app) handle(in gunim.Intent) {
 	case ForgetFolder:
 		a.forget(in.Path)
 		a.refresh()
+	case ShowPrivacy:
+		if a.openLink != nil {
+			go func() {
+				if err := a.openLink(privacyURL); err != nil {
+					log.Printf("music: %v", err)
+				}
+			}()
+		}
 	case AddFiles:
 		a.ask(driver.ChooseOptions{Title: "Add music", Multiple: true, Filters: []driver.FileFilter{
 			{Name: "Music", Patterns: []string{"*.mp3", "*.flac", "*.ogg", "*.oga", "*.wav"}},
@@ -1738,3 +1751,7 @@ func (a *app) place(x spread) {
 	a.refresh()
 	a.startSoon()
 }
+
+// privacyURL is Skiva's privacy policy, which Google Play asks an app to
+// link to from inside it.
+const privacyURL = "https://skalarit-ab.github.io/skiva/privacy.html"

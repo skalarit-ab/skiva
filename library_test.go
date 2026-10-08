@@ -439,3 +439,22 @@ func TestAfterARowIsDroppedOnlyTheRowUnderThePointerIsLit(t *testing.T) {
 		}
 	}
 }
+
+func TestTheLibrarysMenuEndsWithThePrivacyPolicy(t *testing.T) {
+	w, root, run := stage(t, geom.Sz(1100, 720), library4())
+	l := root.lib
+	var items []string
+	withUI(t, w, run, func(u *gunim.UI) {
+		l.openMore(u)
+		for _, it := range l.menu.Items() {
+			items = append(items, it.Label)
+		}
+		l.pick(len(items)-1, u)
+	})
+	if len(items) < 2 || items[len(items)-1] != "Privacy policy" || !l.menu.Items()[len(items)-1].Break {
+		t.Fatalf("the menu holds %q, want Privacy policy last, under a line", items)
+	}
+	if got := intents(w); len(got) != 1 || got[0] != (ShowPrivacy{}) {
+		t.Fatalf("Privacy policy sent %v, want ShowPrivacy", got)
+	}
+}
