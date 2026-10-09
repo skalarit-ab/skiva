@@ -23,8 +23,12 @@ github.com/jfreymuth/vorbis v1.0.2 h1:m1xH6+ZI4thH927pgKD8JOH4eaGRm18rEE9/0WKjvN
 github.com/jfreymuth/vorbis v1.0.2/go.mod h1:DoftRo4AznKnShRl1GxiTFCseHr4zR9BN3TWXyuzrqQ=
 github.com/marrasen/gunim v0.0.0-20261008131141-02a4ac7b0cf1 h1:BZUDgH6RR/Nupv89wqn7n7W+z9WSZAGe/W1ds+U/jEo=
 github.com/marrasen/gunim v0.0.0-20261008131141-02a4ac7b0cf1/go.mod h1:T1ceVaYYVmiWNA1E3BcJg3WqfRG+JkpC4+Qe0Uze3zM=
+github.com/marrasen/gunim v0.0.0-20261009085918-c0334eb22557 h1:WtOv9ouQZkVYOn7gt3fR7uPv7O+Ogh7OlZvTP4sIjEE=
+github.com/marrasen/gunim v0.0.0-20261009085918-c0334eb22557/go.mod h1:efEdz3nHHT4XxmKyfauLTo2GM6jih24ENLs4+CgpQ6k=
 github.com/marrasen/oto/v3 v3.5.1-gunim.5 h1:plT8vA7YvC94GQ5FgcVFntrnSoN7DpRQOeauDBqjA8Y=
 github.com/marrasen/oto/v3 v3.5.1-gunim.5/go.mod h1:9Kr9SPGrjo18cdaKxjd2kaf99e1Ln2CUKgbJP5TpiBU=
+github.com/marrasen/oto/v3 v3.5.2-0.20261009085838-f09f6488482c h1:W0m+p6u3+7x1HztPil5d5ilA9iB1cojY/2lP3JauGqk=
+github.com/marrasen/oto/v3 v3.5.2-0.20261009085838-f09f6488482c/go.mod h1:9Kr9SPGrjo18cdaKxjd2kaf99e1Ln2CUKgbJP5TpiBU=
 github.com/mewkiz/flac v1.0.14 h1:hyRGAM8NCKznoPmIi9zz2jyO+nfmxY2ErqBnHZ+gxh4=
 github.com/mewkiz/flac v1.0.14/go.mod h1:HfPYDA+oxjyuqMu2V+cyKcxF51KM6incpw5eZXmfA6k=
 github.com/mewkiz/pkg v0.0.0-20250417130911-3f050ff8c56d h1:IL2tii4jXLdhCeQN69HNzYYW1kl0meSG0wt5+sLwszU=
