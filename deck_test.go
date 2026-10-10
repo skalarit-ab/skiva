@@ -73,3 +73,44 @@ func TestTheSpeakerRestsWhileNothingSounds(t *testing.T) {
 		t.Fatal("stopped, the speaker runs on")
 	}
 }
+
+// heard mixes d for long and returns the level at its end.
+func heard(m *audio.Mixer, long time.Duration) float32 {
+	out := make([]float32, 2*m.Frames(long))
+	m.Mix(out)
+	return out[len(out)-2]
+}
+
+func TestAPauseFadesOutAndPlayingOnFadesIn(t *testing.T) {
+	m := audio.NewMixer()
+	d := newDeck(m)
+	ones := make([]float32, 4*audio.SampleRate)
+	for i := range ones {
+		ones[i] = 1
+	}
+	d.play(audio.NewClip(ones).Source(), func() {}, true, 0)
+	// A track played from its start starts at once, after the few
+	// milliseconds every track starts with.
+	d.setPaused(false)
+	full := heard(m, 40*time.Millisecond)
+	if full != d.volume {
+		t.Fatalf("40 ms after playing from the start the track is at %v, want %v", full, d.volume)
+	}
+	d.setPaused(true)
+	if got := heard(m, pauseFade/2) / full; got < 0.4 || got > 0.6 {
+		t.Errorf("half way through a pause the track is at %.2f of full, want about half", got)
+	}
+	heard(m, pauseFade)
+	d.setPaused(false)
+	if got := heard(m, pauseFade/2) / full; got < 0.4 || got > 0.6 {
+		t.Errorf("half way through playing on the track is at %.2f of full, want about half", got)
+	}
+	// Back at the start, it starts at once again.
+	d.setPaused(true)
+	heard(m, 2*pauseFade)
+	d.seek(0)
+	d.setPaused(false)
+	if got := heard(m, 20*time.Millisecond); got != full {
+		t.Errorf("20 ms after playing from the start again the track is at %v, want %v", got, full)
+	}
+}

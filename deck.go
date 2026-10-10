@@ -32,6 +32,9 @@ type deck struct {
 	eq *audio.EQ
 	// fading is done once the fade as the player closes has ended.
 	fading <-chan struct{}
+	// atStart says the voice is paused at the start of its track,
+	// where playing fades nothing in.
+	atStart bool
 	// resting says the speaker is suspended, as nothing has sounded for
 	// a moment; woken counts the times it was woken, so a rest asked
 	// for before the last waking lapses.
@@ -50,6 +53,10 @@ func newDeck(mix *audio.Mixer) *deck {
 
 // crossfade is how long a track playing fades out as another starts.
 const crossfade = 350 * time.Millisecond
+
+// pauseFade is how long a pause takes to fade the track out, and
+// playing on to fade it back in.
+const pauseFade = 150 * time.Millisecond
 
 // A track is a source the deck plays, at its own loudness gain, and
 // what to close once it is done with.
@@ -71,6 +78,7 @@ func (d *deck) play(src audio.Seeker, closer func(), paused bool, db float64) *a
 	// track starts as near silent as makes no odds.
 	d.voice = d.mix.Play(d.cur.src, audio.Options{Volume: max(d.volume, 1e-6), FadeIn: 30 * time.Millisecond,
 		Paused: paused, Insert: d.eq.Insert()})
+	d.atStart = paused
 	if paused {
 		d.rest()
 	}
@@ -144,7 +152,8 @@ func (d *deck) stop() {
 	d.rest()
 }
 
-// setPaused pauses or resumes the track playing.
+// setPaused pauses or resumes the track playing, fading it out or in:
+// a track played from its start starts at once.
 func (d *deck) setPaused(on bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -152,12 +161,17 @@ func (d *deck) setPaused(on bool) {
 		return
 	}
 	if on {
-		d.voice.Pause()
+		d.voice.Pause(pauseFade)
 		d.rest()
-	} else {
-		d.wake()
-		d.voice.Resume()
+		return
 	}
+	d.wake()
+	fade := pauseFade
+	if d.atStart {
+		fade = 0
+	}
+	d.atStart = false
+	d.voice.Resume(fade)
 }
 
 // seek moves the track playing to at.
@@ -169,6 +183,7 @@ func (d *deck) seek(at time.Duration) {
 		// runs a moment, paused or not, for the playhead to show it.
 		d.wake()
 		_ = d.voice.Seek(at)
+		d.atStart = at == 0 && d.voice.Paused()
 		if d.voice.Paused() {
 			d.rest()
 		}

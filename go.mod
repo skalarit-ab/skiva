@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
-	github.com/marrasen/gunim v0.0.0-20261008131141-02a4ac7b0cf1
+	github.com/marrasen/gunim v0.0.0-20261010093426-700cd8e75a2f
 	golang.org/x/sys v0.48.0
 )
 
