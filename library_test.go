@@ -43,6 +43,17 @@ func age(t *testing.T, dir string) {
 	}
 }
 
+// changed makes dir look changed at now, on the test's clock. A
+// folder's time of change is the system's, which runs behind the
+// test's clock, and Windows may leave it as it was where a folder
+// changes again within a few milliseconds.
+func changed(t *testing.T, dir string, now time.Time) {
+	t.Helper()
+	if err := os.Chtimes(dir, now, now); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAFollowedFolderTellsOfTracksAddedChangedAndTaken(t *testing.T) {
 	root := t.TempDir()
 	copyTone(t, filepath.Join(root, "a.mp3"))
@@ -81,6 +92,7 @@ func TestAFollowedFolderTellsOfTracksAddedChangedAndTaken(t *testing.T) {
 	if err := os.Chtimes(d, now, now); err != nil {
 		t.Fatal(err)
 	}
+	changed(t, root, now)
 	if read, _ := p.poll(now); slices.Contains(read, d) {
 		t.Fatal("a file written a moment ago was read at once")
 	}
@@ -102,6 +114,7 @@ func TestAFollowedFolderTellsOfTracksAddedChangedAndTaken(t *testing.T) {
 		t.Fatal(err)
 	}
 	now = now.Add(pollEvery)
+	changed(t, root, now)
 	_, gone = p.poll(now)
 	slices.Sort(gone)
 	want = []string{filepath.Join(root, "Album", "b.mp3"), filepath.Join(root, "a.mp3")}
