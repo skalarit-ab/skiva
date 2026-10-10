@@ -35,7 +35,7 @@ func TestClosingThePlayerWhilePausedPlaysNothing(t *testing.T) {
 		}
 	}()
 	w := gunim.NewOffscreen(geom.Sz(1100, 720), nil)
-	registerViews(w, d, false, "", false, false)
+	registerViews(w, d, false, "", opened{})
 	gunim.RegisterPatch(w, "player", func(r *playerRoot, s sendIntent, u *gunim.UI) { u.Send(r, s.in) })
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

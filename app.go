@@ -18,7 +18,10 @@ import (
 	"github.com/marrasen/gunim"
 	"github.com/marrasen/gunim/audio"
 	"github.com/marrasen/gunim/driver"
+	"github.com/marrasen/gunim/install"
 	"github.com/marrasen/gunim/paint"
+
+	"github.com/skalarit-ab/skiva/internal/single"
 )
 
 // The vocabulary the two halves share.
@@ -66,6 +69,36 @@ type (
 		// Resumed counts the times the player took up the track and the
 		// list of its last run, so the window opens that list.
 		Resumed int
+		// Settings is what the settings card shows, and Update tells of
+		// a newer release.
+		Settings Settings
+		Update   UpdateNotice
+	}
+	// Settings is what the settings card shows and sets.
+	Settings struct {
+		// Version is this build's version: "dev" for one from a working
+		// tree.
+		Version string
+		// Updates says where updates come from.
+		Updates UpdatesFrom
+		// Mode is how the installed Skiva takes newer releases, as
+		// install.UpdateMode names it: "install" puts one in place for
+		// the next start, "notify" asks first, and "off" does nothing.
+		// Beta says beta releases come too.
+		Mode string
+		Beta bool
+	}
+	// UpdatesFrom says where a Skiva's updates come from.
+	UpdatesFrom int
+	// UpdateNotice tells the window of a newer release, to show: one to
+	// fetch, one Ready, in place for the next start, or, with From, the
+	// release this start is the first of, updated from that version.
+	// Seq counts them, so the window shows each once.
+	UpdateNotice struct {
+		Seq     int
+		Release install.Release
+		Ready   bool
+		From    string
 	}
 	// EQ is the equalizer: its bands, and whether it is bypassed.
 	EQ struct {
@@ -221,6 +254,34 @@ type (
 	// SetEQ sets the equalizer, as it is changed: often, while a band
 	// is dragged.
 	SetEQ struct{ EQ EQ }
+
+	// SetUpdateMode sets how the installed Skiva takes newer releases:
+	// Settings.Mode names the modes.
+	SetUpdateMode struct{ Mode string }
+	// SetBeta has updates take beta releases too, or no longer.
+	SetBeta struct{ On bool }
+	// ShowAbout opens the window about Skiva: its version, what each
+	// release changed, and Check for Updates.
+	ShowAbout struct{}
+	// ShowUpdate opens the window of a newer release: what it changes,
+	// and Update Now, or Restart Now for one Ready.
+	ShowUpdate struct {
+		Release install.Release
+		Ready   bool
+	}
+	// ShowWhatsNew opens a window of what changed since version From.
+	ShowWhatsNew struct{ From string }
+)
+
+// Where updates come from.
+const (
+	// UpdatesNone: a copy that is not installed, as one built from a
+	// working tree, takes none.
+	UpdatesNone UpdatesFrom = iota
+	// UpdatesHere: the installed Skiva on a desktop updates itself.
+	UpdatesHere
+	// UpdatesFromStore: on a phone, the app store updates Skiva.
+	UpdatesFromStore
 )
 
 // The settings of Repeat.
@@ -364,6 +425,14 @@ type app struct {
 	// placement says where the window is, to open it there next run;
 	// nil where there is no window to ask.
 	placement func() (driver.Placement, bool)
+	// windows opens gunim's windows about updates; nil opens none.
+	windows *updateWindows
+	// openedAt is when files were last opened with Skiva; lastOpened
+	// is the last of them, and playNow the one to play once it is read.
+	// See open.
+	openedAt   time.Time
+	lastOpened string
+	playNow    string
 }
 
 // spread is files dropped on a list, with the folders among them
@@ -373,6 +442,9 @@ type spread struct {
 	to    ListID
 	at    int
 	play  bool
+	// opened says the files were opened with Skiva, to play at once,
+	// and together that they follow those opened a moment before.
+	opened, together bool
 }
 
 // chosen is what the system's dialog gave, for a playlist or for the
@@ -394,6 +466,12 @@ type setup struct {
 	permitted, ask func() bool
 	// placement says where the window is, kept as the window closes.
 	placement func() (driver.Placement, bool)
+	// files are files opened with Skiva, to play as it starts, and
+	// handovers carries those a Skiva started later hands this one.
+	files     []string
+	handovers <-chan single.Handover
+	// windows opens gunim's windows about updates; nil opens none.
+	windows *updateWindows
 }
 
 // newApp returns the application half, with the library kept in file
@@ -432,7 +510,7 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 	go a.z.run(ctx.Done())
 	a.choose = func(o driver.ChooseOptions) ([]string, error) { return c.ChooseFiles(ctx, o) }
 	a.openLink = c.OpenLink
-	a.home, a.askMusic, a.placement = at.home, at.ask, at.placement
+	a.home, a.askMusic, a.placement, a.windows = at.home, at.ask, at.placement, at.windows
 	kept, ok := loadSaved(at.file)
 	a.kept = kept
 	if !ok && at.home != "" {
@@ -452,6 +530,11 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 	}
 	if kept.EQ != nil {
 		a.setEQ(*kept.EQ)
+	}
+	a.Settings = currentSettings(kept)
+	if from := install.UpdatedFrom(); from != "" {
+		// The first start of a release an update put in place by itself.
+		a.Update = UpdateNotice{Seq: 1, From: from}
 	}
 	if at.dir != "" {
 		a.follow(at.dir)
@@ -482,9 +565,11 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 	if !a.Scanning {
 		startPlay()
 	}
-	// Without -play, the player takes up the track and the list of its
-	// last run, paused, as soon as the library has the track.
-	if !play.on {
+	// Files opened with Skiva play; without them, or -play, the player
+	// takes up the track and the list of its last run, paused, as soon
+	// as the library has the track.
+	a.open(at.files)
+	if !play.on && len(at.files) == 0 {
 		a.resume, a.resumeFrom = a.kept.Last, a.kept.LastFrom
 		a.takeUp()
 	}
@@ -592,24 +677,41 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 				a.turned()
 			}
 			a.turning = false
+		case h := <-at.handovers:
+			// A Skiva started again, as for a file opened with it.
+			files, quit := handedOver(h)
+			h.Take(true)
+			if quit {
+				return a.close(ctx, c)
+			}
+			c.ToFront()
+			a.open(files)
+		case n := <-news:
+			a.Update = UpdateNotice{Seq: a.Update.Seq + 1, Release: n.release, Ready: n.ready}
+		case <-quitAsked:
+			return a.close(ctx, c)
 		case ev, ok := <-c.Intents():
 			if !ok {
 				return c.Err()
 			}
 			if _, ok := ev.Intent.(CloseAsked); ok {
-				// The window shrinks a little and fades as it leaves, and
-				// the music fades out with it.
-				a.keepPlacement()
-				a.save()
-				a.d.fadeOut(closeFade)
-				c.Leave()
-				return leaving(ctx, c)
+				return a.close(ctx, c)
 			}
 			a.handle(ev.Intent)
 			a.prepareNext()
 		}
 		publish()
 	}
+}
+
+// close closes the window: it shrinks a little and fades as it leaves,
+// and the music fades out with it.
+func (a *app) close(ctx context.Context, c gunim.Client) error {
+	a.keepPlacement()
+	a.save()
+	a.d.fadeOut(closeFade)
+	c.Leave()
+	return leaving(ctx, c)
 }
 
 // leaving waits for the window to close once it has begun to leave.
@@ -1059,7 +1161,7 @@ func (a *app) handle(in gunim.Intent) {
 	case AddPaths:
 		switch to := string(in.To); {
 		case in.To == QueueList || strings.HasPrefix(to, "p:"):
-			a.spreadOut(in.Paths, in.To, in.At, in.Play)
+			a.spreadOut(in.Paths, spread{to: in.To, at: in.At, play: in.Play})
 		default:
 			a.addPaths(in.Paths, "")
 		}
@@ -1157,6 +1259,21 @@ func (a *app) handle(in gunim.Intent) {
 	case ForgetFolder:
 		a.forget(in.Path)
 		a.refresh()
+	case SetUpdateMode:
+		if err := install.SetUpdates(installer(), install.UpdateMode(in.Mode)); err != nil {
+			log.Printf("skiva: setting how updates come: %v", err)
+		}
+		a.Settings.Mode = string(updateMode())
+	case SetBeta:
+		a.kept.Beta = &in.On
+		a.dirty = true
+		a.Settings.Beta = in.On
+	case ShowAbout:
+		a.showing(a.windows.showAbout())
+	case ShowUpdate:
+		a.showing(a.windows.showUpdate(in.Release, in.Ready))
+	case ShowWhatsNew:
+		a.showing(a.windows.showWhatsNew(in.From))
 	case ShowPrivacy:
 		if a.openLink != nil {
 			go func() {
@@ -1177,7 +1294,7 @@ func (a *app) handle(in gunim.Intent) {
 		a.dirty = true
 		a.refresh()
 		if len(in.Paths) > 0 {
-			a.spreadOut(in.Paths, PlaylistList(in.ID), -1, false)
+			a.spreadOut(in.Paths, spread{to: PlaylistList(in.ID), at: -1})
 		}
 	case RenamePlaylist:
 		if p := a.playlist(in.ID); p != nil && strings.TrimSpace(in.Name) != "" {
@@ -1596,9 +1713,11 @@ func (a *app) playNext() bool {
 	return false
 }
 
-// startSoon starts Up next once its first track is read, if a drop
-// asked for it and nothing plays.
+// startSoon plays a file opened with Skiva once it is read, and starts
+// Up next once its first track is read, if a drop asked for it and
+// nothing plays.
 func (a *app) startSoon() {
+	a.playOpened()
 	if !a.playSoon || a.Current != 0 {
 		a.playSoon = false
 		return
@@ -1680,8 +1799,8 @@ func (a *app) skip(back bool) {
 }
 
 // spreadOut opens the folders among paths, in the background, and
-// hands the files to place, for the list to.
-func (a *app) spreadOut(paths []string, to ListID, at int, play bool) {
+// hands the files to place, for the list and the place x says.
+func (a *app) spreadOut(paths []string, x spread) {
 	go func() {
 		var files []string
 		for _, path := range paths {
@@ -1705,8 +1824,9 @@ func (a *app) spreadOut(paths []string, to ListID, at int, play bool) {
 				files = append(files, path)
 			}
 		}
+		x.paths = files
 		select {
-		case a.spread <- spread{files, to, at, play}:
+		case a.spread <- x:
 		case <-a.ctx.Done():
 		}
 	}()
@@ -1728,6 +1848,8 @@ func (a *app) place(x spread) {
 		return slices.Insert(keys, i, x.paths...)
 	}
 	switch s := string(x.to); {
+	case x.opened:
+		a.placeOpened(x.paths, x.together)
 	case x.to == QueueList:
 		a.queue = insert(a.queue)
 		if x.play && a.Current == 0 {

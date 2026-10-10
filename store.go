@@ -31,6 +31,9 @@ type saved struct {
 	// Window is where the window was as it last closed, and how big;
 	// nil until it has closed once.
 	Window *driver.Placement `json:",omitempty"`
+	// Beta says updates take beta releases too; nil until it is first
+	// set, when they do for a beta.
+	Beta *bool `json:",omitempty"`
 }
 
 // savedList is a playlist as kept: its tracks by their files.

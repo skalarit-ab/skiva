@@ -13,11 +13,26 @@ and runs on Linux, Windows and Android.
 
 ![Skiva](docs/skiva.png)
 
+## Install it
+
+Download the newest release for Windows or Linux from
+[Releases](https://github.com/skalarit-ab/skiva/releases) and run it.
+It installs Skiva for you alone, with no administrator, and offers to
+open MP3, FLAC, Ogg Vorbis and WAV files with it. The installed Skiva
+keeps itself up to date: Settings, in the library's menu, say whether
+updates come by themselves, after asking, or not at all, and whether
+betas come too. Every update is signed, and Skiva runs no other.
+
+A file opened with Skiva plays at once. Opened while Skiva runs, it goes
+to the Skiva running, and several opened together play one after
+another.
+
 ## Run it
 
 ```sh
 go run github.com/skalarit-ab/skiva@latest
 go run github.com/skalarit-ab/skiva@latest -dir ~/Music
+go run github.com/skalarit-ab/skiva@latest song.flac
 ```
 
 It always has four songs made in code, so it plays anywhere. Its
@@ -70,6 +85,12 @@ go run github.com/marrasen/gunim/tools/gunimapk -keystore ~/keys/skalarit-upload
 	-id se.skalarit.skiva -name Skiva -icon /tmp/skiva-icon.png -permissions music,playback \
 	-version 0.1.0 -o /tmp/skiva.aab .
 ```
+
+## Releases
+
+A tag, as `v0.3.0` or the beta `v0.3.0-beta.1`, publishes a release;
+see [RELEASING.md](RELEASING.md). Desktop and Android share version
+numbers.
 
 ## History
 
