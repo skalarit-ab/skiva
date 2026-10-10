@@ -21,3 +21,16 @@ jobs:
         run: go test ./...
       - name: Build for Windows
         run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null .
+
+  # Files, folders and their times of change behave apart on Windows, so
+  # the tests run there too, as they do before a release.
+  test-windows:
+    name: Test on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test ./...
