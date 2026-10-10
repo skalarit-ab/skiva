@@ -3,6 +3,16 @@
 Each release's section is its notes on GitHub, and what Skiva's update
 window shows as new. See RELEASING.md.
 
+## v0.2.0-beta.2
+
+- Pause fades the music out, and Play fades it back in, over a moment.
+  A track played from its start still starts at once.
+- Files or tracks dropped on the disc play at once. The rest of a drop
+  goes first on Up next.
+- A file added to the library on its own can leave it again, by Remove
+  from library in its row's menu in All tracks. It stays on the
+  playlists and Up next that hold it.
+
 ## v0.2.0-beta.1
 
 The first desktop release, for Windows and Linux.
