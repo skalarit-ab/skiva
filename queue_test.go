@@ -66,7 +66,7 @@ func readAll(t *testing.T, a *app) {
 			a.place(x)
 		case <-time.After(300 * time.Millisecond):
 			a.refresh()
-			a.startSoon()
+			a.playOpened()
 			return
 		}
 	}
@@ -94,17 +94,37 @@ func TestFilesDroppedOnAPlaylistLandAtTheirPlace(t *testing.T) {
 
 func TestFilesDroppedToPlayStartOnceRead(t *testing.T) {
 	dir := t.TempDir()
-	one := filepath.Join(dir, "one.mp3")
+	one, two := filepath.Join(dir, "one.mp3"), filepath.Join(dir, "two.mp3")
 	copyTone(t, one)
+	copyTone(t, two)
 	a := newApp(context.Background(), newDeck(audio.NewMixer()), "")
-	a.handle(AddPaths{Paths: []string{one}, To: QueueList, At: -1, Play: true})
+	all := ids(a)
+	a.handle(PlayTrack{ID: all[0]})
+	a.handle(Enqueue{Tracks: []int{all[3]}})
+	a.handle(AddPaths{Paths: []string{one, two}, To: QueueList, At: -1, Play: true})
 	readAll(t, a)
+	// The first plays now, over the track playing, and the rest go
+	// first on Up next.
 	if e := a.byKey[one]; e == nil || a.Current != e.ID || !a.Playing {
-		t.Fatalf("playing %d, want the file dropped, read", a.Current)
+		t.Fatalf("playing %d, want the first file dropped, read", a.Current)
+	}
+	if want := []int{a.byKey[two].ID, all[3]}; !slices.Equal(a.Queue, want) {
+		t.Fatalf("Up next is %v, want %v", a.Queue, want)
 	}
 }
 
-func TestFilesDraggedOverTheTrackPlayingGoOnUpNext(t *testing.T) {
+func TestTracksDroppedToPlayPlayAtOnce(t *testing.T) {
+	a := newApp(context.Background(), newDeck(audio.NewMixer()), "")
+	all := ids(a)
+	a.handle(PlayTrack{ID: all[0]})
+	a.handle(Enqueue{Tracks: []int{all[3]}})
+	a.handle(Enqueue{Tracks: []int{all[2], all[1]}, Play: true})
+	if a.Current != all[2] || !slices.Equal(a.Queue, []int{all[1], all[3]}) {
+		t.Fatalf("playing %d with Up next %v, want %d and %v", a.Current, a.Queue, all[2], []int{all[1], all[3]})
+	}
+}
+
+func TestFilesDraggedOverTheTrackPlayingPlay(t *testing.T) {
 	s := library4()
 	s.Current, s.Playing = 1, true
 	w, root, run := stage(t, geom.Sz(1100, 720), s)
@@ -123,8 +143,8 @@ func TestFilesDraggedOverTheTrackPlayingGoOnUpNext(t *testing.T) {
 		in = in || v >= 0.95
 		last = v
 	}
-	if last < 0.95 || root.now.drop.text != "Add a.mp3 to Up next" {
-		t.Fatalf("the frame is %v in, saying %q; want it in, saying Add a.mp3 to Up next", last, root.now.drop.text)
+	if last < 0.95 || root.now.drop.text != "Play a.mp3" {
+		t.Fatalf("the frame is %v in, saying %q; want it in, saying Play a.mp3", last, root.now.drop.text)
 	}
 	w.Input(input.Drop{Pos: at, Paths: files})
 	run(1)
@@ -133,7 +153,7 @@ func TestFilesDraggedOverTheTrackPlayingGoOnUpNext(t *testing.T) {
 		t.Fatalf("a drop sent %v", got)
 	}
 	if a, ok := got[0].(AddPaths); !ok || !slices.Equal(a.Paths, files) || a.To != QueueList || !a.Play {
-		t.Fatalf("a drop sent %v, want the file added to Up next, to play", got[0])
+		t.Fatalf("a drop sent %v, want the file played", got[0])
 	}
 	run(30)
 	if v := root.now.drop.on.Value(); v > 0.01 {
@@ -196,7 +216,7 @@ func TestATrackDraggedOntoTheTrackPlayingPlays(t *testing.T) {
 		t.Fatalf("the drop sent %v", got)
 	}
 	if e, ok := got[0].(Enqueue); !ok || !slices.Equal(e.Tracks, []int{2}) || !e.Play {
-		t.Fatalf("the drop sent %v, want track 2 on Up next, to play", got[0])
+		t.Fatalf("the drop sent %v, want track 2 played", got[0])
 	}
 }
 

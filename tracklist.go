@@ -913,7 +913,7 @@ func (t *trackList) hover(i int) {
 }
 
 // prepare sets the menu for the row pressed at at: to add its track to
-// a playlist, or take it off the playlist open.
+// a playlist, or take it off the list open.
 func (t *trackList) prepare(at geom.Point, u *gunim.UI) bool {
 	i := t.rowAt(at)
 	if i < 0 || t.moving >= 0 {
@@ -942,6 +942,9 @@ func (t *trackList) prepare(at geom.Point, u *gunim.UI) bool {
 	} else if t.list == QueueList {
 		items.line()
 		items.add("Remove from Up next", icon.X, func(u *gunim.UI) { u.Send(t, Unqueue{At: i}) })
+	} else if t.list == AllTracks && t.tracks[i].Added {
+		items.line()
+		items.add("Remove from library", icon.X, func(u *gunim.UI) { u.Send(t, RemoveFromLibrary{ID: id}) })
 	}
 	items.set(l.listMenu)
 	l.picks = items.do
