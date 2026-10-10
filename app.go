@@ -39,6 +39,9 @@ type (
 		// Queue is the tracks to play next, in order, before the list
 		// playing goes on.
 		Queue []int
+		// Played is the tracks played before the one playing, the last
+		// first, which Back goes back through.
+		Played []int
 		// Current is the ID of the track playing or paused, zero for
 		// none; Starts counts tracks started, so the window can tell a
 		// track begun again from one carrying on. From is the list it
@@ -254,6 +257,8 @@ type (
 	MoveInQueue struct{ From, To int }
 	// ClearQueue empties Up next.
 	ClearQueue struct{}
+	// ClearPlayed forgets the tracks played before.
+	ClearPlayed struct{}
 	// CloseAsked asks to close the window: the music fades out as it
 	// closes.
 	CloseAsked struct{}
@@ -329,11 +334,12 @@ const (
 	GainMeasuring
 )
 
-// AllTracks is the whole library, as a list to play from, and
-// QueueList the tracks to play next.
+// AllTracks is the whole library, as a list to play from, QueueList
+// the tracks to play next, and PlayedList those played before.
 const (
-	AllTracks ListID = ""
-	QueueList ListID = "q"
+	AllTracks  ListID = ""
+	QueueList  ListID = "q"
+	PlayedList ListID = "h"
 )
 
 // PlaylistList and FolderList name a playlist's and a folder's lists.
@@ -363,8 +369,6 @@ type app struct {
 	ids     int
 	// voice is the track playing's voice, to hear it end.
 	voice *audio.Voice
-	// history is the tracks played, for Back in shuffle.
-	history []int
 	// queue holds Up next, by the tracks' keys, so files dropped there
 	// find their place before they are read. listAt is the track of
 	// the list playing that played last, which the list goes on from
@@ -867,6 +871,7 @@ func (a *app) refresh() {
 			a.Queue = append(a.Queue, e.ID)
 		}
 	}
+	a.showPlayed()
 	a.Folders = a.Folders[:0:0]
 	for _, path := range a.kept.Folders {
 		f := Folder{Path: path, Tracks: []int{}, Reading: a.reading[path]}
@@ -878,6 +883,17 @@ func (a *app) refresh() {
 		a.Folders = append(a.Folders, f)
 	}
 	a.Scanning = len(a.reading) > 0
+}
+
+// showPlayed copies the tracks played before into the state the
+// window sees, the last first.
+func (a *app) showPlayed() {
+	a.Played = a.Played[:0:0]
+	for _, k := range slices.Backward(a.kept.Played) {
+		if e := a.byKey[k]; e != nil {
+			a.Played = append(a.Played, e.ID)
+		}
+	}
 }
 
 // list returns the tracks of the list from, by their IDs, in order.
@@ -958,8 +974,8 @@ func (a *app) forget(dir string) {
 }
 
 // readMissing reads, in the background, the files the library keeps
-// that no folder followed holds: files added on their own and tracks
-// on playlists.
+// that no folder followed holds: files added on their own, tracks on
+// playlists, and tracks played before.
 func (a *app) readMissing() {
 	var paths []string
 	seen := map[string]bool{}
@@ -982,6 +998,9 @@ func (a *app) readMissing() {
 		for _, k := range p.Paths {
 			want(k)
 		}
+	}
+	for _, k := range a.kept.Played {
+		want(k)
 	}
 	a.readFiles(paths)
 }
@@ -1151,6 +1170,14 @@ func (a *app) ask(o driver.ChooseOptions, playlist string) {
 func (a *app) handle(in gunim.Intent) {
 	switch in := in.(type) {
 	case PlayTrack:
+		if in.From == PlayedList {
+			// A track played before plays again, and the list playing
+			// goes on after, as from Up next.
+			at := a.listAt
+			a.start(in.ID)
+			a.listAt = at
+			break
+		}
 		if in.From != QueueList {
 			a.From = in.From
 			a.start(in.ID)
@@ -1236,6 +1263,10 @@ func (a *app) handle(in gunim.Intent) {
 			}
 		}
 		a.refresh()
+	case ClearPlayed:
+		a.kept.Played = nil
+		a.dirty = true
+		a.showPlayed()
 	case TogglePlay:
 		switch {
 		case a.Current == 0 && len(a.Queue) > 0:
@@ -1402,8 +1433,7 @@ func (a *app) start(id int) {
 		a.listAt = id
 	}
 	if a.Current != id {
-		a.history = append(a.history, id)
-		a.dropGone()
+		a.moveOn()
 	}
 	a.Current, a.Playing = id, true
 	a.Starts++
@@ -1457,7 +1487,6 @@ func (a *app) takeUp() {
 	if slices.Contains(a.list(a.From), e.ID) {
 		a.listAt = e.ID
 	}
-	a.history = append(a.history, e.ID)
 	a.Current, a.Playing = e.ID, false
 	a.Starts++
 	a.Resumed++
@@ -1663,8 +1692,7 @@ func (a *app) turned() {
 		}
 	}
 	if a.Current != e.ID {
-		a.history = append(a.history, e.ID)
-		a.dropGone()
+		a.moveOn()
 	}
 	if !fromQueue && slices.Contains(a.list(a.From), e.ID) {
 		a.listAt = e.ID
@@ -1674,6 +1702,23 @@ func (a *app) turned() {
 	a.remember(e)
 	a.d.setGain(a.gainFor(e), false)
 	a.prepareNext()
+}
+
+// maxPlayed is how many tracks played before the player keeps.
+const maxPlayed = 100
+
+// moveOn keeps the track playing among those played, as another
+// starts, or forgets it where it has left the library.
+func (a *app) moveOn() {
+	if e := a.entries[a.Current]; e != nil && a.byKey[e.key] == e {
+		a.kept.Played = append(a.kept.Played, e.key)
+		if n := len(a.kept.Played) - maxPlayed; n > 0 {
+			a.kept.Played = slices.Delete(a.kept.Played, 0, n)
+		}
+		a.dirty = true
+		a.showPlayed()
+	}
+	a.dropGone()
 }
 
 // dropGone forgets the track playing if it has left the library, as
@@ -1710,7 +1755,7 @@ func (a *app) ended() {
 		return
 	}
 	a.Playing = false
-	a.dropGone()
+	a.moveOn()
 	a.Current = 0
 	a.d.stop()
 	a.refresh()
@@ -1789,25 +1834,43 @@ func (a *app) skip(back bool) {
 		}
 		return
 	}
-	if a.Shuffle && len(a.history) > 1 {
-		a.history = a.history[:len(a.history)-1]
-		prev := a.history[len(a.history)-1]
-		a.history = a.history[:len(a.history)-1]
-		a.start(prev)
-		return
+	// Back goes to the track played before, whatever it was played
+	// from.
+	for len(a.kept.Played) > 0 {
+		k := a.kept.Played[len(a.kept.Played)-1]
+		a.kept.Played = a.kept.Played[:len(a.kept.Played)-1]
+		a.dirty = true
+		if e := a.byKey[k]; e != nil {
+			a.goBack(e)
+			return
+		}
 	}
-	// From a track of Up next, Back goes to the list's track it broke
-	// into.
-	if a.Current != a.listAt && slices.Contains(list, a.listAt) {
-		a.start(a.listAt)
-		return
-	}
-	i := slices.Index(list, a.Current)
-	if i > 0 {
-		a.start(list[i-1])
+	// With none played before, as at the first track ever played, it goes
+	// up the list.
+	if i := slices.Index(list, a.Current); i > 0 {
+		a.goBack(a.entries[list[i-1]])
 	} else {
 		a.d.seek(0)
 	}
+}
+
+// goBack plays e, a track before the one playing, which goes first on
+// Up next, so Next comes back to it. The list stays where it was, as
+// for a track of Up next.
+func (a *app) goBack(e *entry) {
+	cur := a.entries[a.Current]
+	n, at := len(a.kept.Played), a.listAt
+	a.start(e.ID)
+	if a.Current != e.ID {
+		return
+	}
+	// The track gone back from is not played before: it is to come.
+	a.kept.Played = a.kept.Played[:n]
+	a.listAt = at
+	if cur != nil && cur != e && a.byKey[cur.key] == cur {
+		a.queue = slices.Insert(a.queue, 0, cur.key)
+	}
+	a.refresh()
 }
 
 // spreadOut opens the folders among paths, in the background, and

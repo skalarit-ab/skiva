@@ -270,3 +270,82 @@ func addedTo(in gunim.Intent) ListID {
 	a, _ := in.(AddPaths)
 	return a.To
 }
+
+func TestBackGoesBackThroughFilesDroppedToPlay(t *testing.T) {
+	dir := t.TempDir()
+	one, two := filepath.Join(dir, "one.mp3"), filepath.Join(dir, "two.mp3")
+	copyTone(t, one)
+	copyTone(t, two)
+	a := newApp(context.Background(), newDeck(audio.NewMixer()), "")
+	all := ids(a)
+	a.handle(PlayTrack{ID: all[0]})
+	a.handle(AddPaths{Paths: []string{one}, To: QueueList, At: -1, Play: true})
+	readAll(t, a)
+	a.handle(AddPaths{Paths: []string{two}, To: QueueList, At: -1, Play: true})
+	readAll(t, a)
+	first, second := a.byKey[one].ID, a.byKey[two].ID
+	if want := []int{first, all[0]}; a.Current != second || !slices.Equal(a.Played, want) {
+		t.Fatalf("playing %d after %v, want %d after %v", a.Current, a.Played, second, want)
+	}
+	// Back goes back the way the tracks played, and each track gone back
+	// from waits on Up next.
+	a.handle(Skip{Back: true})
+	a.handle(Skip{Back: true})
+	if a.Current != all[0] || len(a.Played) != 0 {
+		t.Fatalf("Back twice played %d after %v, want %d after nothing", a.Current, a.Played, all[0])
+	}
+	if want := []int{first, second}; !slices.Equal(a.Queue, want) {
+		t.Fatalf("Up next is %v, want the tracks gone back from, %v", a.Queue, want)
+	}
+	// Next comes forward again, and then the list goes on.
+	played := make([]int, 0, 3)
+	for range 3 {
+		a.handle(Skip{})
+		played = append(played, a.Current)
+	}
+	if want := []int{first, second, all[1]}; !slices.Equal(played, want) {
+		t.Fatalf("Next played %v, want %v", played, want)
+	}
+}
+
+func TestBackAndNextAlongAList(t *testing.T) {
+	a := newApp(context.Background(), newDeck(audio.NewMixer()), "")
+	all := ids(a)
+	a.handle(PlayTrack{ID: all[0]})
+	a.handle(Skip{})
+	a.handle(Skip{})
+	a.handle(Skip{Back: true})
+	if a.Current != all[1] || !slices.Equal(a.Queue, []int{all[2]}) {
+		t.Fatalf("Back played %d with Up next %v, want %d and %v", a.Current, a.Queue, all[1], []int{all[2]})
+	}
+	// The track gone back from plays once, not again as the list goes
+	// on.
+	a.handle(Skip{})
+	a.handle(Skip{})
+	if a.Current != all[3] {
+		t.Fatalf("Next twice after Back played %d, want %d", a.Current, all[3])
+	}
+}
+
+func TestATrackPlayedBeforePlaysAgainAndTheListGoesOn(t *testing.T) {
+	a := newApp(context.Background(), newDeck(audio.NewMixer()), "")
+	all := ids(a)
+	a.handle(PlayTrack{ID: all[0]})
+	a.handle(Skip{})
+	a.handle(Skip{})
+	if want := []int{all[1], all[0]}; !slices.Equal(a.Played, want) {
+		t.Fatalf("played before %v, want the last first: %v", a.Played, want)
+	}
+	a.handle(PlayTrack{ID: all[0], From: PlayedList})
+	if a.Current != all[0] || a.From != AllTracks {
+		t.Fatalf("playing %d from %q, want %d from the library", a.Current, a.From, all[0])
+	}
+	a.handle(Skip{})
+	if a.Current != all[3] {
+		t.Fatalf("Next went to %d, want the list to go on after %d: %d", a.Current, all[2], all[3])
+	}
+	a.handle(ClearPlayed{})
+	if len(a.Played) != 0 {
+		t.Fatalf("played before %v once cleared, want nothing", a.Played)
+	}
+}

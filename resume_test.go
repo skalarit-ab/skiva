@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -122,5 +123,41 @@ func TestTheWindowsTitleNamesTheTrack(t *testing.T) {
 	}
 	if got := windowTitle(Track{Title: "Untitled"}, true); got != "Untitled – "+appName {
 		t.Fatalf("a track without an artist gives the title %q", got)
+	}
+}
+
+func TestTheTracksPlayedBeforeAreKeptBetweenRuns(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "library.json")
+	dropped := filepath.Join(dir, "dropped.mp3")
+	copyTone(t, dropped)
+	a := newApp(context.Background(), newDeck(audio.NewMixer()), file)
+	all := ids(a)
+	a.handle(PlayTrack{ID: all[0]})
+	a.handle(AddPaths{Paths: []string{dropped}, To: QueueList, At: -1, Play: true})
+	readAll(t, a)
+	a.handle(PlayTrack{ID: all[2]})
+	a.save()
+
+	// The next run reads the file dropped, kept as played, once more,
+	// and Back goes back through the run before.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b := newApp(ctx, newDeck(audio.NewMixer()), file)
+	b.kept, _ = loadSaved(file)
+	b.readMissing()
+	readAll(t, b)
+	e := b.byKey[dropped]
+	if e == nil {
+		t.Fatal("the file dropped the run before is not read again")
+	}
+	if want := []int{e.ID, all[0]}; !slices.Equal(b.Played, want) {
+		t.Fatalf("played before %v, want %v", b.Played, want)
+	}
+	b.resume = b.kept.Last
+	b.takeUp()
+	b.handle(Skip{Back: true})
+	if b.Current != e.ID {
+		t.Fatalf("Back went to %d, want the file dropped, %d", b.Current, e.ID)
 	}
 }

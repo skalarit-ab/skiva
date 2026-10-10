@@ -167,7 +167,11 @@ func (l *library) listOf(id ListID) (title string, ids []int) {
 // showList gives the list page the list open.
 func (l *library) showList(u *gunim.UI) {
 	_, ids := l.listOf(l.open)
-	l.list.show(ids, l.byID, l.open, l.state.Current, u)
+	var played []int
+	if l.open == QueueList {
+		played = l.state.Played
+	}
+	l.list.show(ids, played, l.byID, l.open, l.state.Current, u)
 }
 
 // openList slides the list id in over the shelf.
@@ -287,6 +291,9 @@ func (l *library) openMore(u *gunim.UI) {
 	switch {
 	case l.open == QueueList:
 		items.add("Clear Up next", icon.X, func(u *gunim.UI) { u.Send(l.root, ClearQueue{}) })
+		if len(l.state.Played) > 0 {
+			items.add("Clear previously played", icon.History, func(u *gunim.UI) { u.Send(l.root, ClearPlayed{}) })
+		}
 	case strings.HasPrefix(s, "p:"):
 		id := s[2:]
 		items.add("Add files…", icon.FilePlus, func(u *gunim.UI) { u.Send(l.root, AddFiles{Playlist: id}) })
@@ -507,7 +514,8 @@ const gripW = 44
 // trackList draws a list's tracks, one a row: the cover, the title,
 // the artist and the length. The row playing is lit, with bars that
 // move with the music where its length was. A playlist's rows are
-// moved by their grips, the other rows making way.
+// moved by their grips, the other rows making way. Up next shows the
+// tracks played before under its own, the last first.
 type trackList struct {
 	anim.Group
 	root   *playerRoot
@@ -516,6 +524,9 @@ type trackList struct {
 	list   ListID
 	cur    int
 	tracks []Track
+	// past is the tracks played before, shown under the list's own
+	// rows, which count on past them by place.
+	past []Track
 	// hot is the row the pointer is over, and lit how lit each row is,
 	// by place.
 	hot  int
@@ -564,7 +575,11 @@ func (t *trackList) editable() bool {
 	return t.list == QueueList || strings.HasPrefix(string(t.list), "p:")
 }
 
-func (t *trackList) show(ids []int, byID map[int]Track, list ListID, cur int, u *gunim.UI) {
+func (t *trackList) show(ids, past []int, byID map[int]Track, list ListID, cur int, u *gunim.UI) {
+	t.past = t.past[:0]
+	for _, id := range past {
+		t.past = append(t.past, byID[id])
+	}
 	if list != t.list {
 		t.moving = -1
 		for _, s := range t.shift {
@@ -649,6 +664,15 @@ func (t *trackList) show(ids []int, byID map[int]Track, list ListID, cur int, u 
 	u.Invalidate()
 }
 
+// pastIDs returns the tracks played before, as shown.
+func (t *trackList) pastIDs() []int {
+	ids := make([]int, len(t.past))
+	for i, tr := range t.past {
+		ids[i] = tr.ID
+	}
+	return ids
+}
+
 // set takes the list's tracks.
 func (t *trackList) set(ids []int, byID map[int]Track, list ListID, cur int) {
 	t.ids, t.byID, t.list, t.cur = ids, byID, list, cur
@@ -697,20 +721,51 @@ func (t *trackList) Step(dt time.Duration) bool {
 	return moving || t.cur != 0 && t.root.meter.active
 }
 
+// rowAt returns the place of the row at p, -1 for none. The rows
+// played before count on past the list's own.
 func (t *trackList) rowAt(p geom.Point) int {
 	if p.Y < 0 || p.X < 0 || p.X > t.size.W {
 		return -1
 	}
-	i := int(p.Y / rowH)
-	if i >= len(t.tracks) {
-		return -1
+	if i := int(p.Y / rowH); i < len(t.tracks) {
+		return i
 	}
-	return i
+	if y := p.Y - t.pastTop() - pastHeadH; y >= 0 {
+		if j := int(y / rowH); j < len(t.past) {
+			return len(t.tracks) + j
+		}
+	}
+	return -1
+}
+
+// isPast says whether the row at place i is of a track played before.
+func (t *trackList) isPast(i int) bool { return i >= len(t.tracks) }
+
+// trackAt returns the track of the row at place i.
+func (t *trackList) trackAt(i int) Track {
+	if t.isPast(i) {
+		return t.past[i-len(t.tracks)]
+	}
+	return t.tracks[i]
+}
+
+// pastHeadH is the height of the heading over the tracks played
+// before.
+const pastHeadH = 44
+
+// pastTop is where the heading over the tracks played before starts:
+// under the list's rows, or under the words of an empty list.
+func (t *trackList) pastTop() float32 {
+	if len(t.tracks) == 0 {
+		return 170
+	}
+	return float32(len(t.tracks))*rowH + 8
 }
 
 // onGrip says whether p is on a playlist row's grip.
 func (t *trackList) onGrip(p geom.Point) bool {
-	return t.editable() && p.X > t.size.W-10-gripW && t.rowAt(p) >= 0
+	i := t.rowAt(p)
+	return t.editable() && p.X > t.size.W-10-gripW && i >= 0 && !t.isPast(i)
 }
 
 // DragsTouch implements [gunim.TouchDragger]: a finger on a grip moves
@@ -732,10 +787,10 @@ func (t *trackList) Handle(e input.Event, u *gunim.UI) bool {
 		// A row pressed and pulled away carries its track off, to drop
 		// on Up next, the track playing, or a playlist.
 		if d := e.Pos.Sub(t.press); t.down >= 0 && !t.dragging && d.X*d.X+d.Y*d.Y > 36 {
-			tr := t.tracks[t.down]
+			tr := t.trackAt(t.down)
 			grab := geom.Pt(30, cardSize.H/2)
 			ghost := widget.NewDragGhost(&trackCard{tr: tr}, grab)
-			u.StartDrag(t, trackDrag{IDs: []int{tr.ID}, From: t.list}, ghost, grab)
+			u.StartDrag(t, trackDrag{IDs: []int{tr.ID}, From: t.listOf(t.down)}, ghost, grab)
 			t.dragging, t.down = true, -1
 		}
 	case input.PointerLeave:
@@ -760,7 +815,7 @@ func (t *trackList) Handle(e input.Event, u *gunim.UI) bool {
 		i := t.rowAt(e.Pos)
 		if i >= 0 && i == t.down {
 			u.Cue(gunim.CueSelect, t)
-			u.Send(t, PlayTrack{ID: t.tracks[i].ID, From: t.list})
+			u.Send(t, PlayTrack{ID: t.trackAt(i).ID, From: t.listOf(i)})
 			if t.root.narrow {
 				t.root.openSheet(false, u)
 			}
@@ -797,6 +852,14 @@ func (t *trackList) Handle(e input.Event, u *gunim.UI) bool {
 	}
 	u.Invalidate()
 	return true
+}
+
+// listOf returns the list the row at place i plays from.
+func (t *trackList) listOf(i int) ListID {
+	if t.isPast(i) {
+		return PlayedList
+	}
+	return t.list
 }
 
 // fromHere says whether a drag of tracks came from this list, whose
@@ -886,7 +949,7 @@ func (t *trackList) drop(u *gunim.UI) {
 	id := ids[from]
 	ids = slices.Insert(slices.Delete(ids, from, from+1), to, id)
 	t.hot = to
-	t.show(ids, t.byID, t.list, t.cur, u)
+	t.show(ids, t.pastIDs(), t.byID, t.list, t.cur, u)
 	t.moving, t.down = -1, -1
 	if from == to {
 		return
@@ -920,10 +983,10 @@ func (t *trackList) prepare(at geom.Point, u *gunim.UI) bool {
 		return false
 	}
 	l := t.root.lib
-	id := t.tracks[i].ID
+	id, from := t.trackAt(i).ID, t.listOf(i)
 	var items menuItems
-	items.add("Play", icon.Play, func(u *gunim.UI) { u.Send(t, PlayTrack{ID: id, From: t.list}) })
-	if t.list != QueueList {
+	items.add("Play", icon.Play, func(u *gunim.UI) { u.Send(t, PlayTrack{ID: id, From: from}) })
+	if from != QueueList {
 		items.add("Play next", icon.ListStart, func(u *gunim.UI) { u.Send(t, Enqueue{Tracks: []int{id}, Next: true}) })
 		items.add("Add to Up next", icon.ListEnd, func(u *gunim.UI) { u.Send(t, Enqueue{Tracks: []int{id}}) })
 	}
@@ -934,15 +997,19 @@ func (t *trackList) prepare(at geom.Point, u *gunim.UI) bool {
 		items.add(p.Name, icon.ListMusic, func(u *gunim.UI) { u.Send(t, AddToPlaylist{ID: pid, Tracks: []int{id}}) })
 	}
 	items.add("New playlist", icon.Plus, func(u *gunim.UI) { l.newPlaylist([]int{id}, u) })
-	if s := string(t.list); strings.HasPrefix(s, "p:") {
+	// A track played before stays among them: there is nothing to
+	// take it off.
+	switch s := string(t.list); {
+	case from == PlayedList:
+	case strings.HasPrefix(s, "p:"):
 		items.line()
 		items.add("Remove from this playlist", icon.X, func(u *gunim.UI) {
 			u.Send(t, RemoveFromPlaylist{ID: s[2:], At: i})
 		})
-	} else if t.list == QueueList {
+	case t.list == QueueList:
 		items.line()
 		items.add("Remove from Up next", icon.X, func(u *gunim.UI) { u.Send(t, Unqueue{At: i}) })
-	} else if t.list == AllTracks && t.tracks[i].Added {
+	case t.list == AllTracks && t.trackAt(i).Added:
 		items.line()
 		items.add("Remove from library", icon.X, func(u *gunim.UI) { u.Send(t, RemoveFromLibrary{ID: id}) })
 	}
@@ -954,7 +1021,11 @@ func (t *trackList) prepare(at geom.Point, u *gunim.UI) bool {
 // Layout implements [gunim.Node]: as tall as its rows, and at least as
 // tall as the list's view, so a drag anywhere on it is the list's.
 func (t *trackList) Layout(c gunim.Constraints, _ gunim.Frame, _ gunim.Children) geom.Size {
-	h := max(float32(len(t.tracks))*rowH+16, t.root.lib.viewH)
+	h := float32(len(t.tracks))*rowH + 16
+	if len(t.past) > 0 {
+		h = t.pastTop() + pastHeadH + float32(len(t.past))*rowH + 16
+	}
+	h = max(h, t.root.lib.viewH)
 	t.size = c.Constrain(geom.Sz(c.Max.W, h))
 	return t.size
 }
@@ -963,14 +1034,15 @@ func (t *trackList) Layout(c gunim.Constraints, _ gunim.Frame, _ gunim.Children)
 func (t *trackList) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, _ gunim.Children) {
 	defer t.paintAim(p, box)
 	for _, l := range t.leaving {
-		t.paintRow(p, f, l.tr, 0, l.at*rowH, box, false, l.fade.Value())
+		t.paintRow(p, f, l.tr, 0, l.at*rowH, box, false, false, l.fade.Value())
 	}
+	top := t.root.lib.listScroll.Offset()
+	t.paintPast(p, f, box, top)
 	if len(t.tracks) == 0 {
 		t.paintEmpty(p, box)
 		return
 	}
 	// Only the rows in view are drawn, for a library of thousands.
-	top := t.root.lib.listScroll.Offset()
 	first := max(int(top/rowH)-1, 0)
 	last := min(int((top+t.root.lib.viewH)/rowH)+1, len(t.tracks)-1)
 	for i := first; i <= last; i++ {
@@ -985,10 +1057,28 @@ func (t *trackList) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, _ guni
 		if a := t.fresh[i]; a != nil {
 			alpha = a.Value()
 		}
-		t.paintRow(p, f, t.tracks[i], t.litOf(i), y, box, false, alpha)
+		t.paintRow(p, f, t.tracks[i], t.litOf(i), y, box, false, false, alpha)
 	}
 	if t.moving >= 0 {
-		t.paintRow(p, f, t.tracks[t.moving], 1, t.y-t.grab, box, true, 1)
+		t.paintRow(p, f, t.tracks[t.moving], 1, t.y-t.grab, box, true, false, 1)
+	}
+}
+
+// paintPast draws the tracks played before under the list's rows, with
+// their heading, those in view from top.
+func (t *trackList) paintPast(p *paint.Painter, f gunim.Frame, box geom.Size, top float32) {
+	if len(t.past) == 0 {
+		return
+	}
+	y0 := t.pastTop()
+	p.RRect(geom.Rc(24, y0+4, box.W-48, 1), 0, paint.Solid(faded(ink, 0.08)))
+	shaped("Previously played", 13, true).Paint(p, geom.Pt(24, y0+18), faded(ink, 0.6))
+	y0 += pastHeadH
+	first := max(int((top-y0)/rowH)-1, 0)
+	last := min(int((top+t.root.lib.viewH-y0)/rowH)+1, len(t.past)-1)
+	for j := first; j <= last; j++ {
+		i := len(t.tracks) + j
+		t.paintRow(p, f, t.past[j], t.litOf(i), y0+float32(j)*rowH, box, false, true, 1)
 	}
 }
 
@@ -1049,15 +1139,15 @@ func (t *trackList) paintAim(p *paint.Painter, box geom.Size) {
 	p.RRect(geom.Rc(14, y-5, 10, 10), 5, paint.Solid(faded(accent, v)))
 }
 
-// paintRow draws row i at y, lifted as it is moved.
 // paintRow draws track tr's row at y, lit by hot, lifted as it is
-// moved, at alpha as it fades in or out.
-func (t *trackList) paintRow(p *paint.Painter, f gunim.Frame, tr Track, hot, y float32, box geom.Size, lifted bool, alpha float32) {
+// moved, at alpha as it fades in or out. A row of a track played
+// before, past, is never the one playing, and has no grip.
+func (t *trackList) paintRow(p *paint.Painter, f gunim.Frame, tr Track, hot, y float32, box geom.Size, lifted, past bool, alpha float32) {
 	if alpha < 0.01 {
 		return
 	}
 	row := geom.Rc(10, y+2, box.W-20, rowH-4)
-	playing := tr.ID == t.cur
+	playing := tr.ID == t.cur && !past
 	if alpha < 0.999 {
 		// Fading in or out, it shrinks a little toward its middle.
 		mid := row.Min.Add(geom.Pt(row.Size().W/2, row.Size().H/2))
@@ -1095,7 +1185,7 @@ func (t *trackList) paintRow(p *paint.Painter, f gunim.Frame, tr Track, hot, y f
 	// A playlist's row shows its grip as the pointer comes over it,
 	// crossfading with the bars or the length that were there.
 	grip := float32(0)
-	if t.editable() {
+	if t.editable() && !past {
 		grip = min(max(hot, 0), 1)
 		if lifted {
 			grip = 1

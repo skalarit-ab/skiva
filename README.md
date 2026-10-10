@@ -43,8 +43,11 @@ the library's Add a folder adds more. Playlists gather tracks by hand,
 and their rows move by their grips. The library and the playlists are
 kept between runs. A file added to the library on its own leaves it by
 its row's menu; a folder's tracks leave with the folder. Up next holds
-the tracks to play before the list goes on. Tracks drag from their rows,
-and files drag in from a file manager, and each drops where it is let
+the tracks to play before the list goes on, and under them the tracks
+played before, the last first, however they came to play, kept between
+runs. Back goes back through them, and the track it leaves waits first
+on Up next, so Next comes back to it. Tracks drag from their rows, and
+files drag in from a file manager, and each drops where it is let
 go: on the track playing, to play now, with the rest first on Up next;
 on a playlist or Up next, to join it at the gap shown; or on the
 library, which follows a folder dropped there. A drag resting on a
