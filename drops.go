@@ -79,14 +79,14 @@ func (c *trackCard) Paint(p *paint.Painter, _ gunim.Frame, box geom.Size, _ guni
 }
 
 // dropArea is the track playing as a drop target: files or tracks let
-// go over it go on Up next, and play at once if nothing plays. As a
+// go over it play at once, the first now and the rest first on Up
+// next. As a
 // drag comes over it, a frame in the track's colour grows in round it,
 // with what a drop would do in its middle.
 type dropArea struct {
 	anim.Group
 	on, pop *anim.Float
 	text    string
-	playing bool
 }
 
 func newDropArea() *dropArea {
@@ -106,11 +106,7 @@ func (d *dropArea) over(on bool, files []string, tracks []int) {
 		d.pop.Animate(1, anim.Spring{Response: 0.4, Damping: 0.55})
 	}
 	d.on.Animate(1, anim.Snappy)
-	if d.playing {
-		d.text = "Add " + what(files, tracks) + " to Up next"
-	} else {
-		d.text = "Play " + what(files, tracks)
-	}
+	d.text = "Play " + what(files, tracks)
 }
 
 // handle takes drags over the track playing, for n.
@@ -161,12 +157,8 @@ func (d *dropArea) paint(p *paint.Painter, f gunim.Frame, box geom.Size, accent 
 	r := 44 * (0.6 + 0.4*pop)
 	p.ShadowRRect(geom.Rc(mid.X-r, mid.Y-r, 2*r, 2*r), r, paint.Solid(faded(accent, v)),
 		paint.Shadow{Blur: 30, Color: faded(accent, 0.5*v)})
-	ic := icon.ListPlus
-	if !d.playing {
-		ic = icon.Play
-	}
 	s := r * 0.8
-	widget.PaintIcon(p, f.Theme, ic, geom.Rc(mid.X-s/2, mid.Y-s/2, s, s), faded(night, v))
+	widget.PaintIcon(p, f.Theme, icon.Play, geom.Rc(mid.X-s/2, mid.Y-s/2, s, s), faded(night, v))
 	room := box.W - 64
 	run := shaped(d.text, 20, true)
 	if run.Advance <= room {

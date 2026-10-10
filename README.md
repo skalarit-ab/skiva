@@ -35,21 +35,23 @@ go run github.com/skalarit-ab/skiva@latest -dir ~/Music
 go run github.com/skalarit-ab/skiva@latest song.flac
 ```
 
-It always has four songs made in code, so it plays anywhere. Its
-library follows folders of MP3, FLAC, Ogg Vorbis and WAV files, with
-their tags and covers: tracks copied in join it within seconds, and
-tracks deleted leave. It follows your music folder from the first run,
-and `-dir` or the library's Add a folder adds more. Playlists gather
-tracks by hand, and their rows move by their grips. The library and the
-playlists are kept between runs. Up next holds the tracks to play
-before the list goes on. Tracks drag from their rows, and files drag in
-from a file manager, and each drops where it is let go: on the track
-playing, to play now or join Up next; on a playlist or Up next, to join
-it at the gap shown; or on the library, which follows a folder dropped
-there. A drag resting on a list's back button slides it away, to drop
-on the shelf. The equalizer, E, is parametric: up to eight bands, each
-a bell, a shelf, a cut or a notch, dragged about a graph, with the
-sound's spectrum before and after it drawn behind them.
+It always has four songs made in code, so it plays anywhere. Its library
+follows folders of MP3, FLAC, Ogg Vorbis and WAV files, with their tags
+and covers: tracks copied in join it within seconds, and tracks deleted
+leave. It follows your music folder from the first run, and `-dir` or
+the library's Add a folder adds more. Playlists gather tracks by hand,
+and their rows move by their grips. The library and the playlists are
+kept between runs. A file added to the library on its own leaves it by
+its row's menu; a folder's tracks leave with the folder. Up next holds
+the tracks to play before the list goes on. Tracks drag from their rows,
+and files drag in from a file manager, and each drops where it is let
+go: on the track playing, to play now, with the rest first on Up next;
+on a playlist or Up next, to join it at the gap shown; or on the
+library, which follows a folder dropped there. A drag resting on a
+list's back button slides it away, to drop on the shelf. The equalizer,
+E, is parametric: up to eight bands, each a bell, a shelf, a cut or a
+notch, dragged about a graph, with the sound's spectrum before and after
+it drawn behind them.
 
 Loudness gain plays each track, or each album played in order, at -18
 LUFS, measured in the background and kept between runs. Its button

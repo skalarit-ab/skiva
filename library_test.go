@@ -187,6 +187,70 @@ func TestAFolderForgottenTakesItsTracksAllButThoseOnAPlaylist(t *testing.T) {
 	}
 }
 
+func TestAFileAddedOnItsOwnLeavesTheLibraryAllButItsPlaylists(t *testing.T) {
+	dir := t.TempDir()
+	one, two := filepath.Join(dir, "one.mp3"), filepath.Join(dir, "two.mp3")
+	copyTone(t, one)
+	copyTone(t, two)
+	a := newApp(context.Background(), newDeck(audio.NewMixer()), "")
+	a.handle(AddPaths{Paths: []string{one, two}, To: AllTracks, At: -1})
+	readAll(t, a)
+	if a.byKey[one] == nil || a.byKey[two] == nil {
+		t.Fatal("the files added are not in the library")
+	}
+	added := func(path string) bool {
+		i := slices.Index(a.Library, a.byKey[path].ID)
+		return i >= 0 && a.Tracks[i].Added
+	}
+	if !added(one) || !added(two) {
+		t.Fatal("the files added on their own are not marked so")
+	}
+	a.handle(NewPlaylist{ID: "p", Name: "Keep", Tracks: []int{a.byKey[one].ID}})
+	a.handle(RemoveFromLibrary{ID: a.byKey[one].ID})
+	a.handle(RemoveFromLibrary{ID: a.byKey[two].ID})
+	if a.byKey[two] != nil || slices.Contains(a.kept.Files, two) {
+		t.Fatal("the file removed is still in the library")
+	}
+	// The one on a playlist stays known for it, but is no longer one
+	// added on its own.
+	if a.byKey[one] == nil || len(a.Playlists[0].Tracks) != 1 || added(one) || slices.Contains(a.kept.Files, one) {
+		t.Fatalf("the playlist holds %v, and its track is still added on its own: %v", a.Playlists[0].Tracks, a.byKey[one] != nil && added(one))
+	}
+}
+
+func TestARowsMenuRemovesAFileAddedOnItsOwnFromTheLibrary(t *testing.T) {
+	s := library4()
+	s.Tracks[1].Added = true
+	w, root, run := stage(t, geom.Sz(1100, 720), s)
+	tap(w, run, geom.Pt(120, shelfRowY(root, "all")))
+	run(40)
+	l := root.lib
+	labels := func(row int, u *gunim.UI) []string {
+		if !l.list.prepare(geom.Pt(100, float32(row)*rowH+rowH/2), u) {
+			t.Fatalf("row %d has no menu", row)
+		}
+		items := make([]string, 0, len(l.listMenu.Items()))
+		for _, it := range l.listMenu.Items() {
+			items = append(items, it.Label)
+		}
+		return items
+	}
+	withUI(t, w, run, func(u *gunim.UI) {
+		if slices.Contains(labels(0, u), "Remove from library") {
+			t.Fatal("a demo song offers to leave the library")
+		}
+		items := labels(1, u)
+		i := slices.Index(items, "Remove from library")
+		if i < 0 {
+			t.Fatalf("the menu of a file added on its own holds %q, without Remove from library", items)
+		}
+		l.pick(i, u)
+	})
+	if got := intents(w); len(got) != 1 || got[0] != (RemoveFromLibrary{ID: 2}) {
+		t.Fatalf("Remove from library sent %v, want track 2 removed", got)
+	}
+}
+
 func TestATrackDeletedLeavesTheLibraryButPlaysOn(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "one.mp3")

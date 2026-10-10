@@ -124,6 +124,9 @@ type (
 		// for a song made in code.
 		File string
 		Size int64
+		// Added says the file was added to the library on its own, not
+		// found in a folder it follows, so it can be taken out again.
+		Added bool
 		// Format is what the track is stored as; Measured says its
 		// loudness is known: LUFS, as BS.1770 measures it, and Peak, its
 		// loudest sample, 1 at full scale.
@@ -217,6 +220,9 @@ type (
 		ID string
 		At int
 	}
+	// RemoveFromLibrary takes a file added on its own out of the
+	// library. It stays on the playlists and Up next that hold it.
+	RemoveFromLibrary struct{ ID int }
 	// MoveInPlaylist moves the track at From on a playlist to To.
 	MoveInPlaylist struct {
 		ID       string
@@ -227,7 +233,8 @@ type (
 	// window, to a list: to a playlist or Up next at a place, At, or
 	// at its end where At is -1, or to the library. A folder's tracks
 	// join a playlist or Up next, and a folder dropped on the library
-	// is followed. Play starts Up next if nothing plays.
+	// is followed. Play plays the files at once, the first now and the
+	// rest first on Up next, as files opened with Skiva do.
 	AddPaths struct {
 		Paths []string
 		To    ListID
@@ -235,7 +242,8 @@ type (
 		Play  bool
 	}
 	// Enqueue puts tracks on Up next: at its end, or first with Next.
-	// Play starts them if nothing plays.
+	// Play plays them at once: the first now, and the rest first on Up
+	// next.
 	Enqueue struct {
 		Tracks     []int
 		Next, Play bool
@@ -360,11 +368,9 @@ type app struct {
 	// queue holds Up next, by the tracks' keys, so files dropped there
 	// find their place before they are read. listAt is the track of
 	// the list playing that played last, which the list goes on from
-	// once Up next is done, and playSoon says Up next starts as soon
-	// as its first track is read.
-	queue    []string
-	listAt   int
-	playSoon bool
+	// once Up next is done.
+	queue  []string
+	listAt int
 	// spread carries files with the folders among them opened, for
 	// files dropped on a list.
 	spread chan spread
@@ -441,7 +447,6 @@ type spread struct {
 	paths []string
 	to    ListID
 	at    int
-	play  bool
 	// opened says the files were opened with Skiva, to play at once,
 	// and together that they follow those opened a moment before.
 	opened, together bool
@@ -638,7 +643,7 @@ func serve(ctx context.Context, c gunim.Client, d *deck, at setup, play startAt,
 		case <-batch:
 			batch = nil
 			a.refresh()
-			a.startSoon()
+			a.playOpened()
 			a.takeUp()
 			a.prepareNext()
 		case <-keep:
@@ -838,7 +843,9 @@ func (a *app) refresh() {
 	a.Tracks = a.Tracks[:0:0]
 	a.Library = a.Library[:0:0]
 	for _, e := range a.order {
-		a.Tracks = append(a.Tracks, e.Track)
+		tr := e.Track
+		tr.Added = slices.Contains(a.kept.Files, e.key)
+		a.Tracks = append(a.Tracks, tr)
 		a.Library = append(a.Library, e.ID)
 	}
 	if e := a.entries[a.Current]; e != nil && a.byKey[e.key] != e {
@@ -1160,23 +1167,30 @@ func (a *app) handle(in gunim.Intent) {
 		a.listAt = at
 	case AddPaths:
 		switch to := string(in.To); {
+		case in.Play:
+			a.spreadOut(in.Paths, spread{to: QueueList, at: -1, opened: true})
 		case in.To == QueueList || strings.HasPrefix(to, "p:"):
-			a.spreadOut(in.Paths, spread{to: in.To, at: in.At, play: in.Play})
+			a.spreadOut(in.Paths, spread{to: in.To, at: in.At})
 		default:
 			a.addPaths(in.Paths, "")
 		}
 	case Enqueue:
 		keys := a.keys(in.Tracks)
-		if in.Next {
+		switch {
+		case in.Play && len(keys) > 0:
+			a.queue = slices.Concat(keys[1:], a.queue)
+			a.refresh()
+			// The track played leaves the list where it was, as Up
+			// next's do.
+			at := a.listAt
+			a.start(a.byKey[keys[0]].ID)
+			a.listAt = at
+		case in.Next:
 			a.queue = append(keys, a.queue...)
-		} else {
+		default:
 			a.queue = append(a.queue, keys...)
 		}
 		a.refresh()
-		if in.Play && a.Current == 0 {
-			a.playSoon = true
-			a.startSoon()
-		}
 	case Unqueue:
 		if i := a.placeOf(a.queue, in.At); i >= 0 {
 			k := a.queue[i]
@@ -1334,6 +1348,19 @@ func (a *app) handle(in gunim.Intent) {
 			k := p.Paths[i]
 			p.Paths = slices.Delete(p.Paths, i, i+1)
 			if e := a.byKey[k]; e != nil && !a.wanted(e) {
+				a.remove(e)
+			}
+			a.dirty = true
+			a.refresh()
+		}
+	case RemoveFromLibrary:
+		e := a.entries[in.ID]
+		if e == nil {
+			return
+		}
+		if i := slices.Index(a.kept.Files, e.key); i >= 0 {
+			a.kept.Files = slices.Delete(a.kept.Files, i, i+1)
+			if !a.wanted(e) {
 				a.remove(e)
 			}
 			a.dirty = true
@@ -1713,21 +1740,6 @@ func (a *app) playNext() bool {
 	return false
 }
 
-// startSoon plays a file opened with Skiva once it is read, and starts
-// Up next once its first track is read, if a drop asked for it and
-// nothing plays.
-func (a *app) startSoon() {
-	a.playOpened()
-	if !a.playSoon || a.Current != 0 {
-		a.playSoon = false
-		return
-	}
-	if len(a.Queue) > 0 {
-		a.playSoon = false
-		a.playNext()
-	}
-}
-
 // next returns the track after the list playing's last, as shuffle
 // and repeat say, or zero at the end.
 func (a *app) next() int {
@@ -1852,9 +1864,6 @@ func (a *app) place(x spread) {
 		a.placeOpened(x.paths, x.together)
 	case x.to == QueueList:
 		a.queue = insert(a.queue)
-		if x.play && a.Current == 0 {
-			a.playSoon = true
-		}
 	case strings.HasPrefix(s, "p:"):
 		p := a.playlist(s[2:])
 		if p == nil {
@@ -1871,7 +1880,7 @@ func (a *app) place(x spread) {
 	}
 	a.readFiles(read)
 	a.refresh()
-	a.startSoon()
+	a.playOpened()
 }
 
 // privacyURL is Skiva's privacy policy, which Google Play asks an app to

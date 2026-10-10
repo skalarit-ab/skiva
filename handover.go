@@ -83,7 +83,8 @@ func (a *app) placeOpened(paths []string, together bool) {
 	a.lastOpened = paths[len(paths)-1]
 }
 
-// playOpened plays the file opened with Skiva last, once it is read.
+// playOpened plays the file opened with Skiva last, or dropped on the
+// track playing, once it is read.
 func (a *app) playOpened() {
 	e := a.byKey[a.playNow]
 	if a.playNow == "" || e == nil {

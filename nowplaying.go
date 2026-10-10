@@ -134,10 +134,9 @@ func (n *nowPlaying) Paint(p *paint.Painter, f gunim.Frame, box geom.Size, kids 
 // Step implements [gunim.Animator].
 func (n *nowPlaying) Step(dt time.Duration) bool { return n.drop.Step(dt) }
 
-// Handle implements [gunim.Handler]: files and tracks dragged over the
-// track playing go on Up next.
+// Handle implements [gunim.Handler]: files and tracks dropped on the
+// track playing play at once.
 func (n *nowPlaying) Handle(e input.Event, u *gunim.UI) bool {
-	n.drop.playing = n.root.state.Current != 0
 	return n.drop.handle(n, e, u)
 }
 
