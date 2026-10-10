@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"math"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -25,17 +30,53 @@ func icons() []image.Image {
 }
 
 // writeIcon writes the icon n pixels square to a PNG file, as the
-// launcher's icon on a phone.
+// launcher's icon on a phone; or, to a path ending in .ico, at each of
+// iconSizes to a Windows icon file, which the release build makes the
+// program's own icon, for Explorer and the shortcuts.
 func writeIcon(path string, n int) error {
-	f, err := os.Create(path)
-	if err != nil {
+	var b bytes.Buffer
+	if strings.EqualFold(filepath.Ext(path), ".ico") {
+		if err := encodeICO(&b, icons()); err != nil {
+			return err
+		}
+	} else if err := png.Encode(&b, drawIcon(n)); err != nil {
 		return err
 	}
-	if err := png.Encode(f, drawIcon(n)); err != nil {
-		_ = f.Close()
-		return err
+	return os.WriteFile(path, b.Bytes(), 0o644)
+}
+
+// encodeICO writes imgs, each square and 256 pixels or less, as a
+// Windows icon file, each held as a PNG.
+func encodeICO(w io.Writer, imgs []image.Image) error {
+	pngs := make([][]byte, len(imgs))
+	for i, img := range imgs {
+		var b bytes.Buffer
+		if err := png.Encode(&b, img); err != nil {
+			return err
+		}
+		pngs[i] = b.Bytes()
 	}
-	return f.Close()
+	// The header: reserved, 1 for an icon, and how many there are; then
+	// an entry for each, and the images after them all.
+	head := []any{uint16(0), uint16(1), uint16(len(imgs))}
+	at := 6 + 16*len(imgs)
+	for i, img := range imgs {
+		// A side of 256 is written as 0, all the one byte holds.
+		side := uint8(img.Bounds().Dx())
+		head = append(head, side, side, uint8(0), uint8(0), uint16(1), uint16(32), uint32(len(pngs[i])), uint32(at))
+		at += len(pngs[i])
+	}
+	for _, v := range head {
+		if err := binary.Write(w, binary.LittleEndian, v); err != nil {
+			return err
+		}
+	}
+	for _, p := range pngs {
+		if _, err := w.Write(p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // drawIcon draws the icon n pixels square: a record on a tile of

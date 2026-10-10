@@ -3,3 +3,6 @@
 *.exe
 *.apk
 *.aab
+# The icon resource the release build makes for the Windows program.
+*.syso
+/dist

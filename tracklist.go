@@ -304,6 +304,7 @@ func (l *library) openMore(u *gunim.UI) {
 		items.add("Add a folder…", icon.FolderPlus, func(u *gunim.UI) { u.Send(l.root, AddFolder{}) })
 	}
 	items.line()
+	items.add("Settings", icon.Settings, func(u *gunim.UI) { l.root.settings.show(true, u) })
 	items.add("Privacy policy", icon.Shield, func(u *gunim.UI) { u.Send(l.root, ShowPrivacy{}) })
 	items.set(l.menu)
 	l.picks = items.do

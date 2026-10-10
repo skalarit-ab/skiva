@@ -10,6 +10,11 @@
 //
 //	go run .
 //	go run . -dir ~/Music
+//	go run . song.flac
+//
+// Files named after the flags play at once, before Up next; a Skiva
+// started while another runs hands them to that one, and ends.
+// SKIVA_ALONE=1 runs a second Skiva all the same, as to try a change.
 //
 // The player always has four songs made in code, so it has something
 // to play anywhere. The library follows folders of MP3, FLAC, Ogg
@@ -42,6 +47,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"time"
 
 	"github.com/marrasen/gunim"
@@ -49,10 +55,15 @@ import (
 	"github.com/marrasen/gunim/audio/speaker"
 	"github.com/marrasen/gunim/driver"
 	"github.com/marrasen/gunim/geom"
+	"github.com/marrasen/gunim/install"
 	"github.com/marrasen/gunim/widget"
+
+	"github.com/skalarit-ab/skiva/internal/single"
 )
 
 func main() {
+	// A release run from a download installs itself; see install.go.
+	install.Run(installer())
 	moveSettings()
 	dir := flag.String("dir", "", "a folder of music for the library to follow")
 	state := flag.String("state", stateFile(), "the file the library is kept in; empty keeps nothing")
@@ -66,7 +77,8 @@ func main() {
 	library := flag.Bool("library", false, "open with the library over the track playing, on a narrow window")
 	eqOpen := flag.Bool("eq", false, "open with the equalizer showing, for -shot")
 	infoOpen := flag.Bool("info", false, "open with the track's card showing, for -shot")
-	iconOut := flag.String("write-icon", "", "write the icon, 512 pixels square, to this PNG file, and quit")
+	settingsOpen := flag.Bool("settings", false, "open with the settings showing, for -shot")
+	iconOut := flag.String("write-icon", "", "write the icon, 512 pixels square, to this PNG file, or to a .ico file at every size, and quit")
 	list := flag.String("list", "", "open the library on the list of this name, as a playlist's, for -shot")
 	flag.Parse()
 	if *iconOut != "" {
@@ -80,14 +92,14 @@ func main() {
 		log.Fatalf("music: -size %q: want a width and a height, as 400x820", *size)
 	}
 	start := startAt{on: *play, track: *track, at: *at}
-	lib := setup{file: *state, dir: *dir}
+	lib := setup{file: *state, dir: *dir, files: flag.Args()}
 	// The window opens where it last closed, unless asked for a size,
 	// or for a shot, which wants the same window every time.
 	var place *driver.Placement
 	if !flagSet("size") && *shot == "" {
 		place = placement(*state)
 	}
-	if err := run(lib, start, *library, *list, *eqOpen, *infoOpen, *runFor, *shot, *after, geom.Sz(w, h), place); err != nil {
+	if err := run(lib, start, *library, *list, opened{eq: *eqOpen, info: *infoOpen, settings: *settingsOpen}, *runFor, *shot, *after, geom.Sz(w, h), place); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -99,6 +111,9 @@ type startAt struct {
 	at    time.Duration
 }
 
+// opened says what shows over the player as the window opens, for -shot.
+type opened struct{ eq, info, settings bool }
+
 // flagSet reports whether the flag of this name was given.
 func flagSet(name string) bool {
 	set := false
@@ -106,9 +121,29 @@ func flagSet(name string) bool {
 	return set
 }
 
-func run(at setup, play startAt, library bool, list string, eqOpen, infoOpen bool, runFor time.Duration, shot string, after time.Duration, size geom.Size, place *driver.Placement) error {
+func run(at setup, play startAt, library bool, list string, show opened, runFor time.Duration, shot string, after time.Duration, size geom.Size, place *driver.Placement) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	// One Skiva for the user: one running already is handed the files,
+	// and plays them. A Skiva taking a shot runs alone, as do phones,
+	// where the system keeps one.
+	if shot == "" && runtime.GOOS != "android" && os.Getenv("SKIVA_ALONE") != "1" {
+		if dir := settingsDir(); dir != "" {
+			if taken, err := handTo(dir, at.files); taken {
+				return nil
+			} else if err != nil {
+				log.Print(err)
+			}
+			if handovers, stopListening, err := single.Listen(ctx, dir); err != nil {
+				log.Printf("skiva: runs alone: %v", err)
+			} else {
+				// Gone before the process is, so the next Skiva does not
+				// find it.
+				defer stopListening()
+				at.handovers = handovers
+			}
+		}
+	}
 	if runFor > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, runFor)
@@ -138,13 +173,14 @@ func run(at setup, play startAt, library bool, list string, eqOpen, infoOpen boo
 		if err != nil {
 			return fmt.Errorf("music: %w", err)
 		}
-		registerViews(w, d, library, list, eqOpen, infoOpen)
+		registerViews(w, d, library, list, show)
 		// The user's music folder, as the system names it, and leave to
 		// read it, which a phone asks the user for.
 		at.home = a.UserFolder(driver.FolderMusic)
 		at.permitted = func() bool { return a.Permitted(driver.PermissionMusic) }
 		at.ask = func() bool { return a.Ask(driver.PermissionMusic) }
 		at.placement = w.Placement
+		at.windows = &updateWindows{ctx: ctx, app: a}
 		c := w.Client()
 		if shot != "" {
 			go func() {

@@ -11,13 +11,15 @@ import (
 	"github.com/marrasen/gunim/geom"
 	"github.com/marrasen/gunim/icon"
 	"github.com/marrasen/gunim/input"
+	"github.com/marrasen/gunim/install"
 	"github.com/marrasen/gunim/paint"
 	"github.com/marrasen/gunim/text"
+	"github.com/marrasen/gunim/widget"
 )
 
 // registerViews is the window half: the player's view, drawing from d
 // as it plays.
-func registerViews(w *gunim.Window, d *deck, openLibrary bool, list string, eqOpen, infoOpen bool) {
+func registerViews(w *gunim.Window, d *deck, openLibrary bool, list string, show opened) {
 	gunim.RegisterView(w, "player",
 		func(Player) *playerRoot {
 			r := newPlayerRoot(d)
@@ -25,11 +27,14 @@ func registerViews(w *gunim.Window, d *deck, openLibrary bool, list string, eqOp
 				r.sheet.Jump(1)
 			}
 			r.lib.want = list
-			if eqOpen {
+			if show.eq {
 				r.eq.open.Jump(1)
 			}
-			if infoOpen {
+			if show.info {
 				r.info.open.Jump(1)
+			}
+			if show.settings {
+				r.settings.open.Jump(1)
 			}
 			return r
 		},
@@ -154,8 +159,13 @@ type playerRoot struct {
 	// info tells about the track playing, and infoButton opens it.
 	info       *infoCard
 	infoButton *iconButton
-	narrow     bool
-	size       geom.Size
+	// settings is Skiva's settings, opened from the library's menu.
+	settings *settingsCard
+	// toasts tell of updates, and updateSeq is the last update told.
+	toasts    *widget.Toasts
+	updateSeq int
+	narrow    bool
+	size      geom.Size
 }
 
 // narrowWidth is the width under which the library becomes a sheet.
@@ -183,6 +193,8 @@ func newPlayerRoot(d *deck) *playerRoot {
 	})
 	r.info = newInfoCard(r)
 	r.infoButton = newIconButton(icon.Info, 40, func(u *gunim.UI) { r.info.show(!r.info.shown(), u) })
+	r.settings = newSettingsCard(r)
+	r.toasts = widget.NewToasts()
 	return r
 }
 
@@ -216,6 +228,11 @@ func (r *playerRoot) show(s Player, u *gunim.UI) {
 		r.lib.page.Jump(1)
 	}
 	r.eqButton.setLit(len(s.EQ.Bands) > 0 && !s.EQ.Bypass)
+	r.settings.take(s.Settings)
+	if s.Update.Seq != r.updateSeq {
+		r.updateSeq = s.Update.Seq
+		r.toasts.Show(updateToast(s.Update), u)
+	}
 	if title := windowTitle(t, ok); title != r.title {
 		r.title = title
 		u.SetTitle(title)
@@ -268,7 +285,7 @@ func (r *playerRoot) Step(dt time.Duration) bool {
 
 // Children implements [gunim.Composite].
 func (r *playerRoot) Children() []gunim.Node {
-	return []gunim.Node{r.bg, r.now, r.lib, r.listButton, r.eqButton, r.eq, r.infoButton, r.info}
+	return []gunim.Node{r.bg, r.now, r.lib, r.listButton, r.eqButton, r.eq, r.infoButton, r.info, r.settings, r.toasts}
 }
 
 // Focusable implements [gunim.Focusable]: the player's keys come here.
@@ -308,6 +325,16 @@ func (r *playerRoot) Layout(c gunim.Constraints, f gunim.Frame, kids gunim.Child
 			cardAt = geom.Pt(-10000, 0)
 		}
 		kids.At(7).Place(cardAt)
+		// The settings sit in the middle of the window, and the toasts
+		// at its bottom right, clear of a phone's bars.
+		set := kids.At(8).Layout(gunim.Loose(geom.Sz(safe.Size().W-24, safe.Size().H-24)))
+		if r.settings.open.Value() < 0.01 {
+			kids.At(8).Place(geom.Pt(-10000, 0))
+		} else {
+			kids.At(8).Place(safe.Min.Add(geom.Pt((safe.Size().W-set.W)/2, (safe.Size().H-set.H)/2)))
+		}
+		toasts := kids.At(9).Layout(gunim.Loose(geom.Sz(min(380, safe.Size().W-24), safe.Size().H-24)))
+		kids.At(9).Place(safe.Max.Sub(geom.Pt(toasts.W+12, toasts.H+12)))
 		open := r.eq.open.Value()
 		eq.Layout(gunim.Tight(eqArea.Size()))
 		if open < 0.001 {
@@ -368,6 +395,11 @@ func (r *playerRoot) Paint(p *paint.Painter, _ gunim.Frame, box geom.Size, kids 
 	kids.At(4).Paint(p)
 	kids.At(6).Paint(p)
 	kids.At(7).Paint(p)
+	if open := r.settings.open.Value(); open > 0.001 {
+		p.RRect(geom.Rect{Max: box.Point()}, 0, paint.Solid(faded(night, 0.45*min(open, 1))))
+		kids.At(8).Paint(p)
+	}
+	kids.At(9).Paint(p)
 }
 
 // Handle implements [gunim.Handler]: the player's keys, and a tap
@@ -375,6 +407,11 @@ func (r *playerRoot) Paint(p *paint.Painter, _ gunim.Frame, box geom.Size, kids 
 func (r *playerRoot) Handle(e input.Event, u *gunim.UI) bool {
 	switch e := e.(type) {
 	case input.PointerDown:
+		if r.settings.shown() {
+			// A press anywhere but the card puts it away.
+			r.settings.show(false, u)
+			return true
+		}
 		if r.info.shown() {
 			// A press anywhere but the card puts it away.
 			r.info.show(false, u)
@@ -459,6 +496,10 @@ func (r *playerRoot) key(k input.KeyPress, u *gunim.UI) bool {
 	case input.KeyI:
 		r.info.show(!r.info.shown(), u)
 	case input.KeyEscape:
+		if r.settings.shown() {
+			r.settings.show(false, u)
+			return true
+		}
 		if r.info.shown() {
 			r.info.show(false, u)
 			return true
@@ -551,4 +592,16 @@ func (b *background) Paint(p *paint.Painter, _ gunim.Frame, box geom.Size, _ gun
 	end()
 	// A veil over the lights keeps the text above them easy to read.
 	p.RRect(whole, 0, paint.Solid(faded(night, 0.45)))
+}
+
+// updateToast tells of a newer release, as n says: one to fetch, one in
+// place for the next start, or the one this start is the first of.
+func updateToast(n UpdateNotice) widget.Toast {
+	switch {
+	case n.From != "":
+		return install.UpdatedToast(installer(), n.From, ShowWhatsNew{From: n.From})
+	case n.Ready:
+		return install.ReadyToast(installer(), n.Release.Version, ShowUpdate{Release: n.Release, Ready: true})
+	}
+	return install.AvailableToast(installer(), n.Release.Version, ShowUpdate{Release: n.Release})
 }

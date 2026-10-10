@@ -1,0 +1,123 @@
+# Publishing is driven by a tag; see RELEASING.md.
+#
+# Pushing v0.2.0, or a beta as v0.2.0-beta.1, runs the tests on Linux
+# and Windows, and only if both pass builds Skiva for both, signs the
+# checksums, and puts it all on a GitHub release. A tag with a dash is a
+# beta: a pre-release, which only those who take betas get.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Builds without publishing, to try the build.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Both answers are wanted: a failure on one says nothing of the
+      # other.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test ./...
+
+  release:
+    name: Build and publish
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The whole history, for the notes of a release with no
+          # section in CHANGELOG.md, and git describe.
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # A tag names the release. A build by hand calls itself after its
+      # commit, which is no release: it runs as it is, with no installer.
+      - name: Name the version
+        run: |
+          if [ "${{ github.ref_type }}" = tag ]; then
+            version="${{ github.ref_name }}"
+          else
+            version="$(git describe --tags --always)"
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "NUMBER=${version#v}" >> "$GITHUB_ENV"
+
+      # Both build without cgo, so one runner builds both. The Windows
+      # program carries Skiva's icon, for Explorer and the shortcuts,
+      # and is linked as a windowed program, so no console flashes up.
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir dist
+          go run . -write-icon skiva.ico
+          go run github.com/akavel/rsrc@v0.10.2 -ico skiva.ico -arch amd64 -o rsrc_windows_amd64.syso
+          GOOS=windows GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -H=windowsgui -X main.version=$VERSION" \
+            -o "dist/skiva_${NUMBER}_windows_amd64.exe" .
+          rm rsrc_windows_amd64.syso skiva.ico
+          GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X main.version=$VERSION" -o skiva .
+          tar czf "dist/skiva_${NUMBER}_linux_amd64.tar.gz" skiva
+          rm skiva
+          cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+
+      # Installed copies run an update only with this signature. Without
+      # the secret this fails, before anything is published.
+      - name: Sign
+        env:
+          GUNIM_SIGN_KEY: ${{ secrets.GUNIM_SIGN_KEY }}
+        run: go run github.com/marrasen/gunim/tools/gunimsign dist/SHA256SUMS
+
+      # The notes are this version's section of CHANGELOG.md, which
+      # Skiva's update window shows as what's new; without one, the
+      # commits since the last tag.
+      - name: Write the notes
+        if: github.ref_type == 'tag'
+        run: |
+          awk -v want="## $VERSION" '
+            $0 == want { inside = 1; next }
+            inside && /^## / { exit }
+            inside { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            last="$(git describe --tags --abbrev=0 "$VERSION^" 2>/dev/null || true)"
+            git log --no-merges --format='- %s' ${last:+"$last.."}"$VERSION" > notes.md
+          fi
+          cat notes.md
+
+      - name: Publish
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          beta=
+          case "$VERSION" in
+          *-*) beta=--prerelease ;;
+          esac
+          gh release create "$VERSION" $beta --title "Skiva $VERSION" --notes-file notes.md dist/*
+
+      # A build by hand keeps what it built, to try.
+      - name: Keep the build
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: skiva-${{ env.VERSION }}
+          path: dist/
